@@ -280,22 +280,26 @@ class NightscoutFollowerManager(
             setRequestProperty("User-Agent", "JugglucoNG Nightscout follower")
             NightscoutFollowerRegistry.applyAuth(this, secret)
         }
-        val code = connection.responseCode
-        val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
-            ?.bufferedReader()
-            ?.use { it.readText() }
-            .orEmpty()
-        if (code !in 200..299) {
-            throw IllegalStateException("Nightscout HTTP $code: ${body.take(160)}")
+        try {
+            val code = connection.responseCode
+            val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader()
+                ?.use { it.readText() }
+                .orEmpty()
+            if (code !in 200..299) {
+                throw IllegalStateException("Nightscout HTTP $code: ${body.take(160)}")
+            }
+            val array = JSONArray(body)
+            val readings = ArrayList<VirtualGlucoseSensorBridge.Reading>(array.length())
+            for (index in 0 until array.length()) {
+                parseEntry(array.optJSONObject(index))?.let(readings::add)
+            }
+            return readings
+                .distinctBy { it.timestampMs }
+                .sortedBy { it.timestampMs }
+        } finally {
+            connection.disconnect()
         }
-        val array = JSONArray(body)
-        val readings = ArrayList<VirtualGlucoseSensorBridge.Reading>(array.length())
-        for (index in 0 until array.length()) {
-            parseEntry(array.optJSONObject(index))?.let(readings::add)
-        }
-        return readings
-            .distinctBy { it.timestampMs }
-            .sortedBy { it.timestampMs }
     }
 
     private fun importRemoteTreatments(): Int =
