@@ -1,18 +1,22 @@
 name: Nightscout Follower Tests
 
+# Manual-only by request: this workflow no longer runs automatically on push or
+# pull_request. Trigger it yourself from the Actions tab (Run workflow) when you
+# want to run the tests. To re-enable automatic runs, uncomment the push:/
+# pull_request: blocks below.
 on:
-  push:
-    branches: [feat-rob, main]
-    paths:
-      - 'Common/src/test/java/tk/glucodata/drivers/nightscout/**'
-      - 'Common/src/main/java/tk/glucodata/drivers/nightscout/**'
-      - '.github/workflows/nightscout-follower-tests.yml'
-  pull_request:
-    branches: [feat-rob, main]
-    paths:
-      - 'Common/src/test/java/tk/glucodata/drivers/nightscout/**'
-      - 'Common/src/main/java/tk/glucodata/drivers/nightscout/**'
   workflow_dispatch:
+  # push:
+  #   branches: [feat-rob, main]
+  #   paths:
+  #     - 'Common/src/test/java/tk/glucodata/drivers/nightscout/**'
+  #     - 'Common/src/main/java/tk/glucodata/drivers/nightscout/**'
+  #     - '.github/workflows/nightscout-follower-tests.yml'
+  # pull_request:
+  #   branches: [feat-rob, main]
+  #   paths:
+  #     - 'Common/src/test/java/tk/glucodata/drivers/nightscout/**'
+  #     - 'Common/src/main/java/tk/glucodata/drivers/nightscout/**'
 
 jobs:
   nightscout-follower-unit-tests:

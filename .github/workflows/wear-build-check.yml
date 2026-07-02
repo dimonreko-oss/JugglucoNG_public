@@ -17,29 +17,33 @@ name: Wear Build Check
 # just AiDex detection - is caught here rather than slipping through on a filtered
 # subset.
 
+# Manual-only by request: this check no longer runs automatically on push or
+# pull_request. Trigger it yourself from the Actions tab (Run workflow) when you
+# want to verify the wear variant. To re-enable automatic runs, uncomment the
+# push:/pull_request: blocks below.
 on:
-  push:
-    branches: [main, dev-watch]
-    paths:
-      - 'Common/src/main/**'
-      - 'Common/src/mobile/**'
-      - 'Common/src/test/**'
-      - 'Common/src/wear/**'
-      - 'Common/src/wearSi/**'
-      - 'Common/build.gradle'
-      - 'gradle.properties'
-      - '.github/workflows/wear-build-check.yml'
-  pull_request:
-    branches: [main, dev-watch]
-    paths:
-      - 'Common/src/main/**'
-      - 'Common/src/mobile/**'
-      - 'Common/src/test/**'
-      - 'Common/src/wear/**'
-      - 'Common/src/wearSi/**'
-      - 'Common/build.gradle'
-      - 'gradle.properties'
   workflow_dispatch:
+  # push:
+  #   branches: [main, dev-watch]
+  #   paths:
+  #     - 'Common/src/main/**'
+  #     - 'Common/src/mobile/**'
+  #     - 'Common/src/test/**'
+  #     - 'Common/src/wear/**'
+  #     - 'Common/src/wearSi/**'
+  #     - 'Common/build.gradle'
+  #     - 'gradle.properties'
+  #     - '.github/workflows/wear-build-check.yml'
+  # pull_request:
+  #   branches: [main, dev-watch]
+  #   paths:
+  #     - 'Common/src/main/**'
+  #     - 'Common/src/mobile/**'
+  #     - 'Common/src/test/**'
+  #     - 'Common/src/wear/**'
+  #     - 'Common/src/wearSi/**'
+  #     - 'Common/build.gradle'
+  #     - 'gradle.properties'
 
 jobs:
   wear-compile:
