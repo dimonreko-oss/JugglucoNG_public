@@ -2254,16 +2254,27 @@ class AiDexBleManager(
 
     override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
         val uuid = characteristic.uuid
-        val data = characteristic.value ?: return
+        // Copy now: the BLE stack reuses characteristic.value after this returns,
+        // and the handling below runs asynchronously on the handler thread.
+        val data = characteristic.value?.copyOf() ?: return
         if (data.isEmpty()) return
 
         Log.i(TAG, "onCharacteristicChanged: uuid=$uuid len=${data.size} hex=${AiDexParser.hexString(data.copyOfRange(0, minOf(data.size, 8)))}")
 
-        when (uuid) {
-            CHAR_F003 -> handleF003(data)
-            CHAR_F001 -> handleF001Response(data, gatt)
-            CHAR_F002 -> handleF002Response(data, gatt)
-            else -> Log.w(TAG, "onCharacteristicChanged: unexpected uuid=$uuid")
+        // Dispatch on the handler thread, like every other GATT callback, so the
+        // shared driver state (glucose cache, history buffers, gatt queue) is only
+        // ever touched from one thread instead of racing the BLE binder thread.
+        handler.post {
+            if (gatt !== mBluetoothGatt) {
+                Log.w(TAG, "onCharacteristicChanged: stale posted callback for $uuid, ignoring")
+                return@post
+            }
+            when (uuid) {
+                CHAR_F003 -> handleF003(data)
+                CHAR_F001 -> handleF001Response(data, gatt)
+                CHAR_F002 -> handleF002Response(data, gatt)
+                else -> Log.w(TAG, "onCharacteristicChanged: unexpected uuid=$uuid")
+            }
         }
     }
 
