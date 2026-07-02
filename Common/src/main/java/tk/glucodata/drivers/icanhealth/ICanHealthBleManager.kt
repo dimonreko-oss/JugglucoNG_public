@@ -1299,12 +1299,18 @@ class ICanHealthBleManager(
 
     @Deprecated("Deprecated in Java")
     override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-        val data = characteristic.value ?: return
-        when (characteristic.uuid) {
-            ICanHealthConstants.CGM_MEASUREMENT -> handleGlucoseNotification(data)
-            ICanHealthConstants.CGM_SPECIFIC_OPS -> handleVendorAuthResponse(data)
-            ICanHealthConstants.RACP -> handleRacpResponse(data)
-            else -> Log.d(TAG, "Unhandled notify ${characteristic.uuid}: ${data.toHexString()}")
+        // Copy now (the stack reuses the buffer) and dispatch on the handler thread,
+        // so driver state (gattQueue, pendingHistoryBatch, ...) is only ever mutated
+        // from one thread instead of racing the binder thread against the timers.
+        val data = characteristic.value?.copyOf() ?: return
+        val uuid = characteristic.uuid
+        handler.post {
+            when (uuid) {
+                ICanHealthConstants.CGM_MEASUREMENT -> handleGlucoseNotification(data)
+                ICanHealthConstants.CGM_SPECIFIC_OPS -> handleVendorAuthResponse(data)
+                ICanHealthConstants.RACP -> handleRacpResponse(data)
+                else -> Log.d(TAG, "Unhandled notify $uuid: ${data.toHexString()}")
+            }
         }
     }
 
@@ -1314,17 +1320,21 @@ class ICanHealthBleManager(
         characteristic: BluetoothGattCharacteristic,
         status: Int,
     ) {
+        // Dispatch on the handler thread (buffer copied first) so device-info reads
+        // and finishGattOp() serialize with the queue timers instead of racing.
+        val uuid = characteristic.uuid
+        val data = characteristic.value?.copyOf() ?: byteArrayOf()
+        handler.post {
         if (status != BluetoothGatt.GATT_SUCCESS) {
-            Log.w(TAG, "Read failed for ${characteristic.uuid} status=$status")
-            if (characteristic.uuid == ICanHealthConstants.CGM_STATUS && awaitingFreshStatusForHistoryBackfill) {
+            Log.w(TAG, "Read failed for $uuid status=$status")
+            if (uuid == ICanHealthConstants.CGM_STATUS && awaitingFreshStatusForHistoryBackfill) {
                 continuePendingHistoryBackfill("status read failed")
             }
             finishGattOp()
-            return
+            return@post
         }
 
-        val data = characteristic.value ?: byteArrayOf()
-        when (characteristic.uuid) {
+        when (uuid) {
             ICanHealthConstants.MODEL_NUMBER -> {
                 val model = parseDeviceInfoString(data)
                 if (model.isNotEmpty()) {
@@ -1338,7 +1348,7 @@ class ICanHealthBleManager(
                 val resolvedSerial = ICanHealthParser.parseDeviceSerial(data)
                 if (resolvedSerial.isNotEmpty()) {
                     if (rejectMismatchedOnboardingCandidate(gatt, rawSerial, resolvedSerial)) {
-                        return
+                        return@post
                     }
                     rawSerialFromDevice = rawSerial.takeIf { it.isNotBlank() }
                     applyBundledGlucoseKey(rawSerialFromDevice, vendorSoftwareVersion)
@@ -1411,6 +1421,7 @@ class ICanHealthBleManager(
         }
 
         finishGattOp()
+        }
     }
 
     private fun rejectMismatchedOnboardingCandidate(
@@ -1459,10 +1470,13 @@ class ICanHealthBleManager(
     }
 
     override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-        if (status != BluetoothGatt.GATT_SUCCESS) {
-            Log.w(TAG, "Descriptor write failed for ${descriptor.characteristic?.uuid} status=$status")
+        val uuid = descriptor.characteristic?.uuid
+        handler.post {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "Descriptor write failed for $uuid status=$status")
+            }
+            finishGattOp()
         }
-        finishGattOp()
     }
 
     @Deprecated("Deprecated in Java")
@@ -1471,10 +1485,13 @@ class ICanHealthBleManager(
         characteristic: BluetoothGattCharacteristic,
         status: Int,
     ) {
-        if (status != BluetoothGatt.GATT_SUCCESS) {
-            Log.w(TAG, "Write failed for ${characteristic.uuid} status=$status")
+        val uuid = characteristic.uuid
+        handler.post {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "Write failed for $uuid status=$status")
+            }
+            finishGattOp()
         }
-        finishGattOp()
     }
 
     private fun handleResolvedSerial(resolvedSerial: String) {
@@ -1628,7 +1645,7 @@ class ICanHealthBleManager(
                 return
             }
             rememberDriverCurrentReading(reading.glucoseMgdl, sampleTimeMs)
-            storeMeasurement(reading.glucoseMgdl, sampleTimeMs)
+            val liveStored = storeMeasurement(reading.glucoseMgdl, sampleTimeMs)
             phase = Phase.STREAMING
             setUiStatus(UiStatusKind.CONNECTED)
             val packed = packGlucoseResult(reading.glucoseMgdl)
@@ -1636,8 +1653,13 @@ class ICanHealthBleManager(
             lastHandledLiveSequence = reading.sequenceNumber
             lastHandledLiveTimestampMs = sampleTimeMs
             rememberRecentGlucose(reading.glucoseMgdl)
-            updatePersistedHistoryTailTimestamp(sampleTimeMs)
-            rememberCoveredEdge(reading.sequenceNumber, sampleTimeMs)
+            if (liveStored) {
+                // Only mark this minute covered when the native store actually
+                // succeeded; otherwise leave the edge so history backfill re-fetches
+                // it instead of leaving a permanent gap (re-store is idempotent).
+                updatePersistedHistoryTailTimestamp(sampleTimeMs)
+                rememberCoveredEdge(reading.sequenceNumber, sampleTimeMs)
+            }
             scheduleForegroundNotificationRefresh()
             if (isAuthenticated && shouldRequestAuthenticatedHistoryBackfill && !historyBackfillRequested) {
                 requestHistoryBackfill()
@@ -1826,13 +1848,13 @@ class ICanHealthBleManager(
         }
     }
 
-    private fun storeMeasurement(glucoseMgdl: Float, sampleTimeMs: Long) {
+    private fun storeMeasurement(glucoseMgdl: Float, sampleTimeMs: Long): Boolean {
         if (SerialNumber.isBlank() || sampleTimeMs <= 0L) {
-            return
+            return false
         }
         val sampleTimeSec = sampleTimeMs / 1000L
         val nativeStreamValue = glucoseMgdl / 10f
-        runCatching {
+        return runCatching {
             ensureNativeDataptr(SerialNumber)
             applyNativeSensorMetadata()
             val nativeWriteName = resolveExistingNativeSensorName(SerialNumber)
@@ -1855,7 +1877,7 @@ class ICanHealthBleManager(
             Natives.wakebackup()
         }.onFailure {
             Log.stack(TAG, "storeMeasurement", it)
-        }
+        }.isSuccess
     }
 
     private fun resolveSampleTimestampMs(sequenceNumber: Int, fallbackNowMs: Long): Long {
