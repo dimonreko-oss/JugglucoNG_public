@@ -112,6 +112,10 @@ static bool saveRawOnlyPoll(SensorGlucoseData *sens, time_t eventTime,
 jlong SiContext::processData(SensorGlucoseData *sens, time_t nowsecs,
                              int8_t *data, int totlen, int sensorindex) {
   logbytes("SIprocess", (uint8_t *)data, totlen);
+  // Guard header/checksum/record reads against short or malformed packets.
+  if (data == nullptr || totlen < 5) {
+    return 2LL;
+  }
   if (data[2] != 9 || data[0] != -86 || data[1] != 85) {
     static constexpr const int8_t doauth[] = {
         (int8_t)0x23, (int8_t)0xF7, (int8_t)0x6F, (int8_t)0xD9, (int8_t)0xF4};
@@ -134,6 +138,12 @@ jlong SiContext::processData(SensorGlucoseData *sens, time_t nowsecs,
   sensor *sensor = sensors->getsensor(sensorindex);
   const int multiple = data[3];
   const int maxoff = multiple * 14;
+  // The record block must fit inside the packet (records are data[4 .. 4+maxoff-1]);
+  // reject a wire-supplied count that would read past the buffer.
+  if (multiple < 0 || 4 + maxoff > totlen) {
+    LOGGER("SIprocess: bad record count multiple=%d totlen=%d\n", multiple, totlen);
+    return 2LL;
+  }
   int8_t *const start = data + 4;
   for (int off = 0; off < maxoff; off += 14) {
     const uint16_t *one = reinterpret_cast<uint16_t *>(start + off);
