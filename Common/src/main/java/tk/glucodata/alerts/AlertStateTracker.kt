@@ -33,6 +33,7 @@ object AlertStateTracker {
      * by subsequent glucose readings, so repeated live readings stay suppressed
      * until resetState() is called.
      */
+    @Synchronized
     fun shouldTrigger(type: AlertType, config: AlertConfig): Boolean {
         if (manualTestBypass.remove(type)) {
             Log.i(LOG_ID, "${type.name}: Manual test bypass")
@@ -76,6 +77,7 @@ object AlertStateTracker {
      * Call this when the alert ACTUALLY fires (sound/notification played).
      * Updates timestamps and counters.
      */
+    @Synchronized
     fun onAlertTriggered(type: AlertType) {
         if (manualTestTrigger.remove(type)) {
             return
@@ -85,11 +87,13 @@ object AlertStateTracker {
         cooldownUntilTime[type] = lastTriggerTime.getValue(type) + DEFAULT_REARM_COOLDOWN_MS
     }
 
+    @Synchronized
     fun onAlertDismissed(type: AlertType) {
         dismissedAlerts.add(type)
         Log.i(LOG_ID, "Dismissed ${type.name} for current episode")
     }
 
+    @Synchronized
     fun allowNextTriggerForTest(type: AlertType) {
         manualTestBypass.add(type)
     }
@@ -100,6 +104,7 @@ object AlertStateTracker {
      * - Alert is Dismissed by user
      * - Glucose returns to normal (handled by Notify logic usually?)
      */
+    @Synchronized
     fun resetState(type: AlertType) {
         if (
             lastTriggerTime.containsKey(type) ||
