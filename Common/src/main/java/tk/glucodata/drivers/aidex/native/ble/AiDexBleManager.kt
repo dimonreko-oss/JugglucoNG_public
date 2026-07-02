@@ -4377,11 +4377,22 @@ class AiDexBleManager(
 
             // Merge 0x24 raw ADC data with cached 0x23 calibrated glucose using extracted helper.
             val mergeResult = HistoryMerge.mergeHistoryEntries(entries, calibratedGlucoseCache, lastCalibratedGlucoseFallback)
-            storeHistoryEntries(mergeResult.entries)
+            val storeCompleted = storeHistoryEntries(mergeResult.entries)
             // Persist the last known glucose for the next page
             if (mergeResult.lastKnownGlucose != null) lastCalibratedGlucoseFallback = mergeResult.lastKnownGlucose
 
             Log.i(TAG, "0x24: merged=${mergeResult.mergedCount} fallback=${mergeResult.fallbackCount} noGlucose=${mergeResult.noGlucoseCount} (cache remaining=${calibratedGlucoseCache.size})")
+
+            if (!storeCompleted) {
+                // A JNI store failed partway through this page. Do NOT advance the
+                // cursor: leave it so the page is retried on the next connection
+                // (resume uses the persisted historyBriefNextIndex) instead of
+                // leaving a permanent hole in the history. Re-storing already-stored
+                // rows is idempotent (native store dedupes by timestamp).
+                Log.w(TAG, "0x24: history store incomplete at offset $historyBriefNextIndex; keeping cursor to retry")
+                onHistoryDownloadComplete()
+                return
+            }
 
             historyBriefNextIndex = entries.last().timeOffsetMinutes + 1
             writeIntPref("historyBriefNextIndex", historyBriefNextIndex)
@@ -5030,7 +5041,7 @@ class AiDexBleManager(
      * - Leaves UI/current-reading refresh to the single catch-up update after download completion
      * - Leaves Room merge to a single non-destructive sync after download completion
      */
-    private fun storeHistoryEntries(entries: List<HistoryStoreEntry>) {
+    private fun storeHistoryEntries(entries: List<HistoryStoreEntry>): Boolean {
         // Ensure start time is available before computing timestamps.
         // History download can begin before 0x21 succeeds or before any F003 arrives.
         if (sensorstartmsec <= 0L) {
@@ -5038,11 +5049,11 @@ class AiDexBleManager(
         }
         if (sensorstartmsec <= 0L) {
             Log.w(TAG, "storeHistoryEntries: sensorstartmsec still not set after ensureSensorStartTime — skipping ${entries.size} entries")
-            return
+            return false
         }
         if (dataptr == 0L) {
             Log.w(TAG, "storeHistoryEntries: dataptr is 0 — cannot store")
-            return
+            return false
         }
 
         val now = System.currentTimeMillis()
@@ -5051,6 +5062,7 @@ class AiDexBleManager(
         var stored = 0
         var skippedWearDuration = 0
         var newestStoredTimeMs = 0L
+        var completedFully = true
 
         for (entry in entries) {
             // Filter invalid
@@ -5111,7 +5123,8 @@ class AiDexBleManager(
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "storeHistoryEntries: aidexProcessData failed: $t")
-                break  // Don't keep hammering a broken JNI
+                completedFully = false
+                break  // Don't keep hammering a broken JNI; caller retries this page
             }
 
         }
@@ -5128,6 +5141,7 @@ class AiDexBleManager(
             noteValidReadingAvailable(newestStoredTimeMs, "valid-history")
             Log.i(TAG, "storeHistoryEntries: stored $stored/${entries.size} entries (total=$historyStoredCount)")
         }
+        return completedFully
     }
 
     /**
