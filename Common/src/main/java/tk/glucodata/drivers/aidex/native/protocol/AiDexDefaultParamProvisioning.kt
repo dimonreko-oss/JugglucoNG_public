@@ -296,6 +296,7 @@ object AiDexDefaultParamProvisioning {
         firmwareVersion: String?,
         catalogEntries: List<CatalogEntry>,
     ): List<Comparison> {
+        val versionKey = deriveCatalogVersionKey(firmwareVersion)
         return candidateCatalogEntries(catalogEntries, settingType, firmwareVersion).asSequence()
             .mapNotNull { entry ->
                 currentVariants.mapNotNull { variant ->
@@ -315,8 +316,14 @@ object AiDexDefaultParamProvisioning {
                 )
             }
             .sortedWith(
+                // When several catalog entries match the current DP equally well (identical
+                // settingContent across firmware revisions is common), break ties toward the
+                // entry that matches the device firmware version, then toward an IMPORTED
+                // overlay over the bundled snapshot, before finally ordering by version.
                 compareBy<Comparison> { it.diffByteCount }
                     .thenBy { if (it.current.headerSwapApplied) 1 else 0 }
+                    .thenBy { if (versionKey != null && it.entry.version == versionKey) 0 else 1 }
+                    .thenBy { if (it.entry.source == CatalogSource.IMPORTED) 0 else 1 }
                     .thenBy { it.entry.version }
             )
             .toList()

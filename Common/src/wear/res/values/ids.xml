@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ids referenced by shared code inside !isWearable branches (dead code on the
+     watch) so they must still resolve at compile time on the wear variant. -->
+<resources>
+    <item name="reconnect" type="id"/>
+    <item name="finish" type="id"/>
+</resources>
