@@ -133,19 +133,19 @@
         <receiver
             android:name=".DeleteReceiver"
             android:enabled="true"
-            android:exported="true"/>
+            android:exported="false"/>
         <receiver
             android:name=".LossOfSensorAlarm"
             android:enabled="true"
-            android:exported="true"/>
+            android:exported="false"/>
         <receiver
             android:name=".ConnectReceiver"
             android:enabled="true"
-            android:exported="true"/>
+            android:exported="false"/>
         <receiver
             android:name=".Maintenance"
             android:enabled="true"
-            android:exported="true"/>
+            android:exported="false"/>
         <receiver
             android:name=".receivers.AlarmActionReceiver"
             android:enabled="true"
@@ -166,7 +166,7 @@
         <service
             android:name="tk.glucodata.keeprunning"
             android:enabled="true"
-            android:exported="true"
+            android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
         <provider
