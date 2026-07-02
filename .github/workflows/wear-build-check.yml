@@ -11,12 +11,19 @@ name: Wear Build Check
 # so such main<->wear divergence is caught in CI. It intentionally does NOT build
 # the native libg.so or a full APK (that needs the NDK + submodules and is much
 # heavier); a periodic/manual full assemble can cover the native side separately.
+#
+# It also runs the full :Common unit-test suite (testMobileLibre3SiDexGoogleDebug
+# UnitTest). This shares the `main` source set, so any pure-JVM regression - not
+# just AiDex detection - is caught here rather than slipping through on a filtered
+# subset.
 
 on:
   push:
     branches: [main, dev-watch]
     paths:
       - 'Common/src/main/**'
+      - 'Common/src/mobile/**'
+      - 'Common/src/test/**'
       - 'Common/src/wear/**'
       - 'Common/src/wearSi/**'
       - 'Common/build.gradle'
@@ -26,6 +33,8 @@ on:
     branches: [main, dev-watch]
     paths:
       - 'Common/src/main/**'
+      - 'Common/src/mobile/**'
+      - 'Common/src/test/**'
       - 'Common/src/wear/**'
       - 'Common/src/wearSi/**'
       - 'Common/build.gradle'
@@ -66,10 +75,9 @@ jobs:
             --no-daemon \
             --warning-mode=all
 
-      - name: Run shared AiDex detection unit tests
+      - name: Run Common unit tests (full suite)
         run: |
           ./gradlew :Common:testMobileLibre3SiDexGoogleDebugUnitTest \
-            --tests "tk.glucodata.drivers.aidex.*" \
             --no-daemon
 
       - name: Upload test report
