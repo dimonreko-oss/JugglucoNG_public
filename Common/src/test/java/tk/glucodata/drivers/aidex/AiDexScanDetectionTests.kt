@@ -105,4 +105,104 @@ class AiDexScanDetectionTests {
         )
         assertFalse(d.isLikelyAiDex)
     }
+
+    // --- edge cases ---
+
+    @Test
+    fun normalizeSerial_extractsFamilySerialEmbeddedInText() {
+        assertEquals("X-ABCDEF12", AiDexScanDetection.normalizeSerial("Sensor Vista-ABCDEF12 tail"))
+    }
+
+    @Test
+    fun normalizeSerial_bareTokenMustBeExactlyEleven() {
+        assertNull(AiDexScanDetection.normalizeSerial("ABCDEFGHIJ"))    // 10
+        assertNull(AiDexScanDetection.normalizeSerial("ABCDEFGHIJKL")) // 12
+        assertEquals("X-ABCDEFGHIJK", AiDexScanDetection.normalizeSerial("ABCDEFGHIJK")) // 11
+    }
+
+    @Test
+    fun normalizeSerial_collapsesInternalSpacesForBareToken() {
+        assertEquals("X-ABCDEFGHIJK", AiDexScanDetection.normalizeSerial("ABCDE FGHIJK"))
+    }
+
+    @Test
+    fun normalizeSerial_xPrefixNeedsAtLeastEightBodyChars() {
+        assertEquals("X-ABCD1234", AiDexScanDetection.normalizeSerial("X-ABCD1234")) // 8 body
+        assertNull(AiDexScanDetection.normalizeSerial("X-ABCD123"))                  // 7 body
+    }
+
+    @Test
+    fun detect_usesScanRecordNameWhenDeviceNameMissing() {
+        val d = AiDexScanDetection.detect(
+            address = "AA:BB:CC:DD:EE:FF",
+            deviceName = null,
+            scanRecordName = "X-DEADBEEF",
+            scanRecordBytes = null,
+            advertisedServiceUuids = null,
+        )
+        assertTrue(d.isLikelyAiDex)
+        assertEquals("X-DEADBEEF", d.serial)
+    }
+
+    @Test
+    fun detect_readsSerialFromLocalNameInScanRecord() {
+        val name = "X-DEADBEEF"
+        val nameBytes = name.toByteArray(Charsets.UTF_8)
+        val record = ByteArray(nameBytes.size + 2)
+        record[0] = (nameBytes.size + 1).toByte()
+        record[1] = 0x09
+        System.arraycopy(nameBytes, 0, record, 2, nameBytes.size)
+        val d = AiDexScanDetection.detect(
+            address = "AA:BB:CC:DD:EE:FF",
+            deviceName = null,
+            scanRecordName = null,
+            scanRecordBytes = record,
+            advertisedServiceUuids = null,
+        )
+        assertEquals("X-DEADBEEF", d.serial)
+    }
+
+    @Test
+    fun detect_flagsPrimaryServiceHintFromRawBytesWithoutFf30() {
+        // AD: complete list of 16-bit UUIDs containing 0x181F only
+        val record = byteArrayOf(0x03, 0x03, 0x1F, 0x18)
+        val d = AiDexScanDetection.detect(
+            address = "AA:BB:CC:DD:EE:FF",
+            deviceName = null,
+            scanRecordName = null,
+            scanRecordBytes = record,
+            advertisedServiceUuids = null,
+        )
+        assertTrue(d.isLikelyAiDex)
+        assertFalse(d.detectedViaFf30)
+        assertNull(d.serial)
+    }
+
+    @Test
+    fun detect_firstNonBlankNameBecomesDisplayName() {
+        val d = AiDexScanDetection.detect(
+            address = "AA:BB:CC:DD:EE:FF",
+            deviceName = "  ",              // blank -> ignored
+            scanRecordName = "X-AB12CD34",
+            scanRecordBytes = null,
+            advertisedServiceUuids = null,
+        )
+        assertEquals("X-AB12CD34", d.displayName)
+    }
+
+    @Test
+    fun extractLocalName_returnsNullOnMalformedRecord() {
+        // length byte claims 5 bytes but only 1 follows the type
+        assertNull(AiDexScanDetection.extractLocalName(byteArrayOf(0x05, 0x09, 0x41)))
+        assertNull(AiDexScanDetection.extractLocalName(ByteArray(0)))
+    }
+
+    @Test
+    fun advertises16BitService_findsUuidAmongMultiple() {
+        // two UUIDs: 0x181F then 0xFF30
+        val record = byteArrayOf(0x05, 0x03, 0x1F, 0x18, 0x30, 0xFF.toByte())
+        assertTrue(AiDexScanDetection.advertises16BitService(record, 0x181F))
+        assertTrue(AiDexScanDetection.advertises16BitService(record, 0xFF30))
+        assertFalse(AiDexScanDetection.advertises16BitService(record, 0xF000))
+    }
 }
