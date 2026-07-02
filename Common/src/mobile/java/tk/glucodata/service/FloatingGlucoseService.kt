@@ -69,7 +69,13 @@ class FloatingGlucoseService : Service(), LifecycleOwner, ViewModelStoreOwner, S
         super.onCreate()
         savedStateRegistryController.performRestore(null)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
-        
+
+        // Started via startForegroundService(): the OS crashes the service
+        // (ForegroundServiceDidNotStartInTimeException) if startForeground() isn't
+        // called within a few seconds, so call it FIRST — before the slower,
+        // failure-prone overlay/window setup below.
+        startForeground(81431, createForegroundNotification())
+
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         settingsRepository = FloatingSettingsRepository(this)
         glucoseRepository.refreshSensorSerial()
@@ -78,9 +84,6 @@ class FloatingGlucoseService : Service(), LifecycleOwner, ViewModelStoreOwner, S
         observeSettings()
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
-        
-        // Satisfy Foreground Service requirement immediately
-        startForeground(81431, createForegroundNotification())
     }
     
     private fun createForegroundNotification(): android.app.Notification {
