@@ -451,7 +451,7 @@ private  void logcharacter(UUID uuid,String str,byte[] value) {
 private void onCharacteristicChanged33(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, byte[] value) {
        var wakelock=    Applic.usewakelock?(((PowerManager) app.getSystemService(POWER_SERVICE)).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Juggluco::Libre3")):null;
        if(wakelock!=null)
-           wakelock.acquire();
+           wakelock.acquire(60_000L); // bounded: auto-releases if a parse exception skips release() below
             UUID uuid = characteristic.getUuid();
 //      {if(doLog){      showbytes(LOG_ID+" onCharacteristicChanged Start "+uuid.toString(), value);};}
             if(uuid.equals(LIBRE3_CHAR_GLUCOSE_DATA)) {

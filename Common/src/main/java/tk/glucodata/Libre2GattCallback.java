@@ -435,7 +435,7 @@ private	void oldonCharacteristicChanged(byte[] value) {
 				if (pack1 && pack2) {
 					final var wakeLock=Natives.hasRootcheck()?getwakelock():null;
 					if(wakeLock!=null)
-						wakeLock.acquire();
+						wakeLock.acquire(60_000L); // bounded: auto-releases if a parse exception skips release() below
                         /*
                     if(isWearable) {
                         if(Natives.getDisconnectSensor()) {
