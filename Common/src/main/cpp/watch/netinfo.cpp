@@ -584,6 +584,12 @@ extern "C" JNIEXPORT jboolean  JNICALL   fromjava(setmynetinfo)(JNIEnv *env, jcl
    else  {
         if(usedversion>=3) {
             int otherindex= info->index;
+            // info->index is deserialized from the peer's wire blob; reject an
+            // out-of-range value before indexing the fixed-size global arrays.
+            if(otherindex<0 || otherindex>=(int)maxallhosts || index<0 || index>=(int)maxallhosts) {
+                LOGARTAG("bad peer index");
+                return false;
+                }
             peers2us[otherindex]=index;
             us2peers[index]=otherindex;
             if(usedversion>=4) {
