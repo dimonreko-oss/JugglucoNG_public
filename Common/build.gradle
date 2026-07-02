@@ -274,8 +274,9 @@ buildTypes {
 
 
         release {
+            manifestPlaceholders["debuggable"] = "false"
             signingConfig signingConfigs.alg
-            minifyEnabled true 
+            minifyEnabled true
         shrinkResources true
 
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro', 'proguard-rules.my', 'proguard-rules.log'
@@ -294,6 +295,7 @@ buildTypes {
                 }
         }
         releaselog {
+            manifestPlaceholders["debuggable"] = "false"
             versionNameSuffix '-log'
             signingConfig signingConfigs.alg
             minifyEnabled true 
@@ -316,6 +318,7 @@ buildTypes {
                 }
         }
         releasedub {
+            manifestPlaceholders["debuggable"] = "false"
             versionNameSuffix 'DUB'
         applicationIdSuffix ".dub"
             resValue "string", "app_name", "JugglucoNG Dub"
@@ -339,6 +342,7 @@ buildTypes {
                 }
         }
         releasedub2 {
+            manifestPlaceholders["debuggable"] = "false"
             versionNameSuffix 'DUB2'
         applicationIdSuffix ".dub2"
             resValue "string", "app_name", "JugglucoNG Dub 2"
