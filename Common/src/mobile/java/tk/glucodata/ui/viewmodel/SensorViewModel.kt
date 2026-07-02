@@ -1221,8 +1221,11 @@ class SensorViewModel : ViewModel() {
      * with another device, and only then do the normal local teardown + remove the
      * entry. When false, keep the sensor's pairing/keys (old disconnect behaviour).
      *
-     * The unpair must run (and complete) before terminate, because terminate tears the
-     * vendor stack down and there would be nothing left to send deleteBond with.
+     * unpairSensor() only QUEUES the deleteBond (0xF2) write and returns immediately;
+     * the sensor confirms it asynchronously and the driver then drops into broadcast-only
+     * mode. We must wait for that BEFORE terminating — otherwise terminateSensor()'s
+     * close() tears the GATT link down before deleteBond is delivered and the sensor
+     * stays paired (the exact bug the "Unpair" button, which never terminates, avoids).
      */
     fun disconnectAiDexSensor(serial: String, breakPairing: Boolean) {
         val gatt = findGatt(serial)
@@ -1231,11 +1234,22 @@ class SensorViewModel : ViewModel() {
             return
         }
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val success = runCatching { gatt.unpairSensor() }.getOrElse {
+            val started = runCatching { gatt.unpairSensor() }.getOrElse {
                 android.util.Log.e("SensorVM", "disconnectAiDexSensor unpairSensor failed: ${it.message}")
                 false
             }
-            android.util.Log.i("SensorVM", "AiDex disconnect (breakPairing): unpairSensor result=$success")
+            // Wait (bounded) for the deleteBond to actually be delivered and the driver to
+            // enter broadcast-only, so we don't kill the link mid-unpair.
+            if (started) {
+                val deadlineMs = System.currentTimeMillis() + 8_000L
+                while (System.currentTimeMillis() < deadlineMs && !gatt.broadcastOnlyConnection) {
+                    kotlinx.coroutines.delay(300L)
+                }
+                android.util.Log.i(
+                    "SensorVM",
+                    "AiDex disconnect (breakPairing): unpair settled=${gatt.broadcastOnlyConnection}"
+                )
+            }
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                 terminateSensor(serial)
             }
