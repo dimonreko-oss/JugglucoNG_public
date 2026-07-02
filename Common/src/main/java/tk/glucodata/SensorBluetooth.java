@@ -708,7 +708,12 @@ public class SensorBluetooth {
     }
 
     // static final ArrayList<SuperGattCallback> gattcallbacks = new ArrayList<>();
-    public static final ArrayList<SuperGattCallback> gattcallbacks = new ArrayList<>();
+    // CopyOnWriteArrayList: iterated from BLE binder threads on every reading
+    // (othersworking / reconnect / scan-filter build) while add/remove run on other
+    // threads. COW makes iteration snapshot-safe (no ConcurrentModificationException)
+    // and add/remove atomic without locking every call site; the list is small (one
+    // entry per sensor) and mutated rarely, so copy-on-write is essentially free.
+    public static final java.util.List<SuperGattCallback> gattcallbacks = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     public static ArrayList<SuperGattCallback> mygatts() {
         synchronized (gattcallbacks) {
