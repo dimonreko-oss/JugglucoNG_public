@@ -48,7 +48,7 @@ class MessageReceiver: WearableListenerService() {
                     }
                 val source=  sender.localnode
                  if(doLog) {Log.i(LOG_ID,"path==MessageSender.DEFAULTS_PATH "+source );}
-                  setWearosdefaults(source,true);
+                  if (source != null) setWearosdefaults(source,true);
                    val context=if(MainActivity.thisone==null)Applic.app;else MainActivity.thisone;
                    Applic.setbluetooth(context,false)
                  }
@@ -79,7 +79,7 @@ class MessageReceiver: WearableListenerService() {
                 val name: String
                 val galaxy: Boolean
                 if (isWearable) {
-                    name = sender.localnode
+                    name = sender.localnode ?: return
                     galaxy = true;
                 } else {
                     name = sourceId

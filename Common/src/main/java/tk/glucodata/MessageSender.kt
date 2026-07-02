@@ -46,10 +46,10 @@ class MessageSender(val activity: Context):CapabilityClient.OnCapabilityChangedL
     private val messageClient by lazy { Wearable.getMessageClient(activity) }
     private val capabilityClient by lazy { Wearable.getCapabilityClient(activity) }
     private val nodeClient by lazy { Wearable.getNodeClient(activity) }
-    public val localnodeall by lazy { Tasks.await(nodeClient.localNode) }
-    public val localnode by lazy { localnodeall.id }
+    public val localnodeall: Node? by lazy { runCatching { Tasks.await(nodeClient.localNode) }.getOrNull() }
+    public val localnode: String? by lazy { localnodeall?.id }
     public val galaxywatch by lazy {
-        isGalaxy(localnodeall) }
+        localnodeall?.let { isGalaxy(it) } ?: false }
 
     var nodes: Set<Node>? = null
     private var nexttimes:LongArray?=null
@@ -362,7 +362,7 @@ companion object {
              Log.d(LOG_ID,"localnode==null")
              return
              }
-        val name=sender.localnode;
+        val name=sender.localnode ?: return;
         Natives.watchBluetooth(name,sensor,nums);
         }
 
@@ -523,12 +523,13 @@ public fun sendDatawithInt(ident: Int, data: ByteArray) {
                 Log.i(LOG_ID,"times!![it] > nu) it=$id times!![it]=${times!![it]} nu=$nu ")
                 return
                 }
-            if(sender.localnode==null) {
+            val localname = sender.localnode
+            if(localname==null) {
                 Log.d(LOG_ID,"localnode==null")
                     return
                 }
             val netinfo: ByteArray?
-            netinfo = if(isWearable) { Natives.getmynetinfo(sender.localnode, true, 0,true,0) } else { Natives.getmynetinfo(id, false, 0, isGalaxy(othernode),0) }
+            netinfo = if(isWearable) { Natives.getmynetinfo(localname, true, 0,true,0) } else { Natives.getmynetinfo(id, false, 0, isGalaxy(othernode),0) }
             if(netinfo == null) {
                 Log.e(LOG_ID,"netinfo=null")
                 return
