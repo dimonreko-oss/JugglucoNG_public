@@ -350,9 +350,15 @@ fun ExportDataSettingsSheet(
     ): Result<Unit> {
         return withContext(Dispatchers.IO) {
             runCatching {
+                // OpenDocumentTree returns a tree Uri; createDocument needs the parent
+                // *document* Uri, so convert it before creating child documents.
+                val parentDocUri = DocumentsContract.buildDocumentUriUsingTree(
+                    treeUri,
+                    DocumentsContract.getTreeDocumentId(treeUri)
+                )
                 val jsonUri = DocumentsContract.createDocument(
                     context.contentResolver,
-                    treeUri,
+                    parentDocUri,
                     ExportPackageExporter.mimeTypeFor(request),
                     ExportPackageExporter.suggestedFileName(request)
                 ) ?: error(context.getString(R.string.unable_to_open_destination_file))
@@ -360,7 +366,7 @@ fun ExportDataSettingsSheet(
 
                 val reportUri = DocumentsContract.createDocument(
                     context.contentResolver,
-                    treeUri,
+                    parentDocUri,
                     "text/plain",
                     ExportPackageExporter.suggestedReadableReportFileName()
                 ) ?: error(context.getString(R.string.unable_to_open_destination_file))
