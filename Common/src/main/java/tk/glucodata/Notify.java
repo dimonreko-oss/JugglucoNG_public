@@ -1285,13 +1285,18 @@ public class Notify {
             return;
         }
         final int kind = resolveAlertKind(-1);
-        cancelCurrentRetrySession("notification-open");
+        boolean productionAction = true;
         if (kind >= 0) {
             final AlertType type = AlertType.Companion.fromId(kind);
             if (type != null) {
-                SnoozeManager.INSTANCE.clearSnooze(type);
-                AlertStateTracker.INSTANCE.onAlertDismissed(type);
+                productionAction = AlertStateTracker.INSTANCE.onAlertDismissed(type);
+                if (productionAction) {
+                    SnoozeManager.INSTANCE.clearSnooze(type);
+                }
             }
+        }
+        if (productionAction) {
+            cancelCurrentRetrySession("notification-open");
         }
         cancelAlertNotification();
         stopalarm();
@@ -2145,9 +2150,7 @@ public class Notify {
                     : label + " " + glucosestr(dummyValue);
 
             if (onenot != null) {
-                // Reset state so test always plays sound
                 if (alertType != null) {
-                    AlertStateTracker.INSTANCE.resetState(alertType);
                     AlertStateTracker.INSTANCE.allowNextTriggerForTest(alertType);
                 }
                 allowNextAlertEffectsForTest();
@@ -2204,14 +2207,6 @@ public class Notify {
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
             if (onenot != null) {
                 int kind = isHigh ? 1 : 0;
-
-                // For test scenarios, reset tracker state so sound always plays
-                if (isTest) {
-                    AlertType alertType = AlertType.Companion.fromId(kind);
-                    if (alertType != null) {
-                        AlertStateTracker.INSTANCE.resetState(alertType);
-                    }
-                }
 
                 final String defaultName = isTest
                         ? ("Test Custom " + (isHigh ? "High" : "Low"))
@@ -2638,11 +2633,13 @@ public class Notify {
 
                     if (!AlertStateTracker.INSTANCE.shouldTrigger(alertType, config)) {
                         if (doLog)
-                            Log.i(LOG_ID, "Alert Suppressed (Snoozed or Retry Logic): kind=" + kind);
+                            Log.i(LOG_ID, "Alert suppressed by alert state: kind=" + kind);
                         alarm = false;
                     } else {
-                        AlertStateTracker.INSTANCE.onAlertTriggered(alertType);
-                        syncRetrySession(kind, glvalue, message, strglucose, type, config, true);
+                        final boolean productionTrigger = AlertStateTracker.INSTANCE.onAlertTriggered(alertType);
+                        if (productionTrigger) {
+                            syncRetrySession(kind, glvalue, message, strglucose, type, config, true);
+                        }
                     }
                 }
             } catch (Exception e) {
@@ -3327,18 +3324,15 @@ public class Notify {
         final java.util.List<NotificationChartDrawer.ValueItem> peerValueItems =
                 NotificationMultiSensorSource.valueItems(peerCurrents);
 
-        // Semantic Color
-        int glucoseColor = NotificationChartDrawer.getGlucoseColor(Applic.app, displayGlucoseValue, isMmol);
-        // Multi-sensor: tint the primary value (and its inline arrow) with the
-        // primary sensor's identity color, matching the dashboard's subtle
-        // PRIMARY_TEXT_BLEND so the notification follows the same color scheme.
-        int primaryDisplayColor = glucoseColor;
-        if (!peerValueItems.isEmpty()) {
-            primaryDisplayColor = SensorVisuals.blendArgb(
-                    glucoseColor,
-                    SensorVisuals.colorArgb(activeSensorSerial),
-                    SensorVisuals.PRIMARY_TEXT_BLEND);
-        }
+        boolean hasSelectedPeerSensors = !peerCurrents.isEmpty();
+        int primaryDisplayColor = NotificationChartDrawer.notificationChartPrimaryValueColor(
+                Applic.app,
+                displayGlucoseValue,
+                isMmol,
+                activeSensorSerial,
+                hasSelectedPeerSensors);
+        int secondaryDisplayColor = NotificationChartDrawer.notificationChartSecondaryValueColor(Applic.app);
+        int tertiaryDisplayColor = NotificationChartDrawer.notificationChartTertiaryValueColor(Applic.app);
 
         // ========== READ NOTIFICATION PREFERENCES ==========
         android.content.SharedPreferences prefs = Applic.app
@@ -3363,7 +3357,7 @@ public class Notify {
         // Render Arrow (Color + Size from Preferences) - still bitmap for colored
         // vector
         Bitmap arrowBitmap = (showArrow && !inlineMultiArrows)
-                ? NotificationChartDrawer.drawArrow(Applic.app, rate, isMmol, glucoseColor, arrowSize)
+                ? NotificationChartDrawer.drawArrow(Applic.app, rate, isMmol, primaryDisplayColor, arrowSize)
                 : null;
 
         // 3a. Construct RemoteViews (Collapsed)
@@ -3417,8 +3411,9 @@ public class Notify {
         // Glucose Value - Render as Bitmap to support IBM Plex Font & Locale
         // consistency
         // Collapsed: Base size 24sp (scale 1.0 * fontSize)
-        Bitmap valueBitmap = NotificationChartDrawer.drawMultiGlucoseText(Applic.app, valueText.toString(), primaryDisplayColor,
-                peerValueItems, fontSize, fontWeight, useSystemFont,
+        Bitmap valueBitmap = NotificationChartDrawer.drawMultiGlucoseText(Applic.app, valueText.toString(),
+                primaryDisplayColor, secondaryDisplayColor, tertiaryDisplayColor, peerValueItems,
+                fontSize, fontWeight, useSystemFont,
                 inlineMultiArrows ? rate : Float.NaN, isMmol, arrowSize);
         remoteViews.setViewVisibility(R.id.notification_glucose, View.GONE);
         remoteViews.setViewVisibility(R.id.notification_glucose_image, View.VISIBLE);
@@ -3445,7 +3440,8 @@ public class Notify {
 
         // Glucose Value - Expanded: Size 28sp (scale ~1.17 * fontSize)
         Bitmap valueBitmapExpanded = NotificationChartDrawer.drawMultiGlucoseText(Applic.app, valueText.toString(),
-                primaryDisplayColor, peerValueItems, fontSize * 1.166f, fontWeight, useSystemFont,
+                primaryDisplayColor, secondaryDisplayColor, tertiaryDisplayColor, peerValueItems,
+                fontSize * 1.166f, fontWeight, useSystemFont,
                 inlineMultiArrows ? rate : Float.NaN, isMmol, arrowSize);
         remoteViewsExpanded.setViewVisibility(R.id.notification_glucose, View.GONE);
         remoteViewsExpanded.setViewVisibility(R.id.notification_glucose_image, View.VISIBLE);
