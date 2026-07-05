@@ -712,11 +712,14 @@ extern "C" JNIEXPORT jlong JNICALL fromjava(getdataptr)(JNIEnv *env, jclass cl,
                  sensor.data());
           candidate = new libre3stream(sensorindex, sens);
         } else {
+#ifdef DEXCOM
           if (sens->isAccuChek()) {
             LOGGER("getdataptr(%.*s) AccuChek\n", (int)sensor.length(),
                    sensor.data());
             candidate = new accustream(sensorindex, sens);
-          } else if (sens->isAiDex()) {
+          } else
+#endif
+          if (sens->isAiDex()) {
             LOGGER("getdataptr(%.*s) AiDex\n", (int)sensor.length(),
                    sensor.data());
             candidate = new aidexstream(sensorindex, sens);
