@@ -49,3 +49,10 @@ hs_err_pid*
 out/
 tmp/
 Common/printmappingout.txt
+
+# --- Editor/backup snapshots & stray artifacts (not build inputs) ---
+# NOTE: proguard-rules.pro/.my/.log ARE build inputs (see Common/build.gradle) — keep them.
+*.bak
+*.class
+*.werktniet
+AndroidManifest.xml.*
