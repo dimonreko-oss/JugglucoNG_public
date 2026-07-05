@@ -25,9 +25,10 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import java.util.ArrayDeque
-import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.CopyOnWriteArraySet
 import kotlin.math.abs
 import kotlin.math.round
@@ -127,7 +128,10 @@ class ICanHealthBleManager(
         ) : GattOp()
     }
 
-    private val gattQueue = ArrayDeque<GattOp>()
+    // Thread-safe: mutated on the handler thread (add/poll/drain) but also cleared
+    // from the binder thread in onConnectionStateChange(DISCONNECTED) via
+    // clearGattTransportState(). A plain ArrayDeque raced there.
+    private val gattQueue = ConcurrentLinkedDeque<GattOp>()
     @Volatile private var gattOpActive = false
 
     private var cgmService: BluetoothGattService? = null
@@ -205,7 +209,12 @@ class ICanHealthBleManager(
     @Volatile override var vendorFirmwareVersion: String = ""
         private set
     @Volatile private var vendorSoftwareVersion: String = ""
-    private val pendingHistoryBatch = LinkedHashMap<Int, PendingHistoryReading>()
+    // Thread-safe: populated/iterated on the handler thread but also cleared from the
+    // binder thread on disconnect (onConnectionStateChange -> resetConnectionAttemptState
+    // / clearGattTransportState). A plain LinkedHashMap threw ConcurrentModificationException
+    // when a disconnect raced an in-flight history notification. Insertion order is not
+    // relied on — flushHistoryBackfillBatch() sorts by timestamp/sequence explicitly.
+    private val pendingHistoryBatch = ConcurrentHashMap<Int, PendingHistoryReading>()
     private val recentLiveGlucoseMgdl = ArrayDeque<Float>(RECENT_GLUCOSE_WINDOW_SIZE)
     private val rejectedOnboardingAddresses = CopyOnWriteArraySet<String>()
 
@@ -1072,6 +1081,14 @@ class ICanHealthBleManager(
         hasAuthenticatedReconnectHint = false
         resetConnectionAttemptState()
         clearGattTransportState()
+        if (stop) {
+            // Permanent shutdown: free() sets stop=true before calling close(), so
+            // quit the HandlerThread here — otherwise it outlives the sensor object.
+            // Transient reconnects (softReconnect/stale-gatt reset) call close() with
+            // stop=false and must keep the thread alive.
+            handler.removeCallbacksAndMessages(null)
+            runCatching { handlerThread.quitSafely() }
+        }
         super.close()
     }
 
@@ -3784,24 +3801,6 @@ class ICanHealthBleManager(
         }
     }
 
-    fun destroy() {
-        stop = true
-        handler.removeCallbacksAndMessages(null)
-        cancelScheduledReconnect()
-        try {
-            mBluetoothGatt?.disconnect()
-        } catch (_: Throwable) {
-        }
-        try {
-            mBluetoothGatt?.close()
-        } catch (_: Throwable) {
-        }
-        mBluetoothGatt = null
-        try {
-            handlerThread.quitSafely()
-        } catch (_: Throwable) {
-        }
-    }
 }
 
 internal fun ByteArray.toHexString(): String =

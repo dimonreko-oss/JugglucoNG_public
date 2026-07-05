@@ -3265,6 +3265,18 @@ class AnytimeBleManager(
     }
 
 
+    override fun close() {
+        if (stop) {
+            // Permanent shutdown: free() sets stop=true before calling close(), so
+            // quit the HandlerThread here — otherwise it outlives the sensor object.
+            // softDisconnect() calls close() with stop=false and must keep the thread
+            // alive so a later softReconnect() can resume on the same handler.
+            handler.removeCallbacksAndMessages(null)
+            runCatching { handlerThread.quitSafely() }
+        }
+        super.close()
+    }
+
     override fun softDisconnect() {
         Log.i(TAG, "softDisconnect requested")
         if (!ct5EndCycleInternalDisconnect) {

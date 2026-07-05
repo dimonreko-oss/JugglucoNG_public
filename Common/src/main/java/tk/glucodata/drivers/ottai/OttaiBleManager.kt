@@ -359,6 +359,17 @@ class OttaiBleManager(
         connectDevice(0)
     }
 
+    override fun close() {
+        if (stop) {
+            // Permanent shutdown: free() sets stop=true before calling close(), so
+            // quit the HandlerThread here — otherwise it outlives the sensor object.
+            // Transient close() calls (stop=false) keep the thread alive for reconnect.
+            handler.removeCallbacksAndMessages(null)
+            runCatching { handlerThread.quitSafely() }
+        }
+        super.close()
+    }
+
     private fun knownBleAddress(): String? =
         OttaiConstants.normalizeBleAddress(mActiveDeviceAddress, allowPlain = false)
             ?: OttaiConstants.normalizeBleAddress(
