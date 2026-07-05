@@ -88,6 +88,27 @@ object HistoryExporter {
     }
 
     /**
+     * Builds the timestamp -> sensorSerial fallback map used when a GlucosePoint
+     * carries no serial of its own. Only the timestamps actually being exported are
+     * ever looked up, so the load is bounded to the [min, max] span of `data` instead
+     * of pulling the entire history table into memory (which, post-CursorWindow
+     * enlargement, can be tens of thousands of rows). Empty input needs no query.
+     */
+    private suspend fun loadSerialByTimestamp(
+        dao: HistoryDao,
+        data: List<GlucosePoint>
+    ): Map<Long, String> {
+        val rangeStart = data.minOfOrNull { it.timestamp } ?: return emptyMap()
+        val rangeEnd = data.maxOfOrNull { it.timestamp } ?: return emptyMap()
+        val readings = dao.getReadingsBetween(rangeStart, rangeEnd)
+        val serialByTimestamp = HashMap<Long, String>(readings.size)
+        for (reading in readings) {
+            serialByTimestamp[reading.timestamp] = reading.sensorSerial
+        }
+        return serialByTimestamp
+    }
+
+    /**
      * Export data to a CSV file.
      * Format: Timestamp(ms),Date,Value,RawValue,Unit,SensorSerial
      * Values are always exported in the User's preferred unit for consistency with what they see.
@@ -109,11 +130,7 @@ object HistoryExporter {
                 val dao = database.historyDao()
                 val journalDao = database.journalDao()
                 // Build a map of timestamp -> sensorSerial for enriching export
-                val allReadings = dao.getReadingsSince(0L)
-                val serialByTimestamp = HashMap<Long, String>(allReadings.size)
-                for (reading in allReadings) {
-                    serialByTimestamp[reading.timestamp] = reading.sensorSerial
-                }
+                val serialByTimestamp = loadSerialByTimestamp(dao, data)
                 val journalEntries = loadExportJournalEntries(journalDao, data, startMillis, endMillis)
                 val insulinPresets = journalDao.getInsulinPresets()
 
@@ -271,11 +288,7 @@ object HistoryExporter {
         val database = HistoryDatabase.getInstance(context)
         val dao = database.historyDao()
         val journalDao = database.journalDao()
-        val allReadings = dao.getReadingsSince(0L)
-        val serialByTimestamp = HashMap<Long, String>(allReadings.size)
-        for (reading in allReadings) {
-            serialByTimestamp[reading.timestamp] = reading.sensorSerial
-        }
+        val serialByTimestamp = loadSerialByTimestamp(dao, data)
         val journalEntries = loadExportJournalEntries(journalDao, data, startMillis, endMillis)
         val insulinPresets = journalDao.getInsulinPresets()
 

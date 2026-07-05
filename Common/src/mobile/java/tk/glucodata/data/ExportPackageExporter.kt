@@ -176,16 +176,36 @@ object ExportPackageExporter {
                 require(request.hasSelection) { "No export content selected" }
                 val (payload, _) = buildPayload(appContext, request)
                 val exportDir = File(appContext.cacheDir, "exports").apply { mkdirs() }
-                exportDir.listFiles()
-                    ?.filter { it.isFile && it.name.startsWith("Juggluco_") }
-                    ?.forEach { it.delete() }
 
                 val fileName = suggestedFileName(request)
                 val file = File(exportDir, fileName)
-                OutputStreamWriter(file.outputStream(), StandardCharsets.UTF_8).use { writer ->
-                    writer.write(payload.toString(2))
-                    writer.write("\n")
+
+                // Write to a temp file first, then atomically swap it into place. The
+                // previous cached export stays intact until the new payload is fully
+                // materialized, so an interrupted write can never leave the cache
+                // without a valid export (the old delete-then-write order could).
+                val tempFile = File.createTempFile("export_", ".tmp", exportDir)
+                try {
+                    OutputStreamWriter(tempFile.outputStream(), StandardCharsets.UTF_8).use { writer ->
+                        writer.write(payload.toString(2))
+                        writer.write("\n")
+                    }
+                    if (!tempFile.renameTo(file)) {
+                        file.delete()
+                        if (!tempFile.renameTo(file)) {
+                            error("Could not finalize export file: $fileName")
+                        }
+                    }
+                } catch (t: Throwable) {
+                    tempFile.delete()
+                    throw t
                 }
+
+                // Drop older cached exports now that the new one is safely in place.
+                exportDir.listFiles()
+                    ?.filter { it.isFile && it.name.startsWith("Juggluco_") && it != file }
+                    ?.forEach { it.delete() }
+
                 CachedExport(
                     file = file,
                     fileName = fileName,
