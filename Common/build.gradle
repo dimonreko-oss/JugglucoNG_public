@@ -553,6 +553,12 @@ buildTypes {
        }
     lint {
         abortOnError false
+        // Don't let lint gate release APKs. Besides matching abortOnError=false, the
+        // release lintVital pass currently CRASHES (a lint/Kotlin-analysis tool bug:
+        // KotlinIllegalArgumentException in FIR resolution) while analyzing the wear
+        // complication sources pulled into the `small` variant, which blocked its
+        // release build even though R8/native/packaging all succeeded.
+        checkReleaseBuilds false
     }
     dependenciesInfo {
         includeInApk true
