@@ -553,6 +553,29 @@ class HistoryParsingTests {
     }
 
     @Test
+    fun testParseHistoryResponse_Status2Bit() {
+        // Full vendor `status` = glucose bits [11:10] = b1 bits [3:2].
+        val payload = byteArrayOf(
+            0x00, 0x00,
+            0x42, 0x80.toByte(), // bits[3:2]=00 -> status 0, statusBit false
+            0x42, 0x84.toByte(), // bits[3:2]=01 -> status 1, statusBit true
+            0x42, 0x88.toByte(), // bits[3:2]=10 -> status 2, statusBit false (high bit repo used to drop)
+            0x42, 0x8C.toByte(), // bits[3:2]=11 -> status 3, statusBit true
+        )
+        val records = AiDexParser.parseHistoryResponse(payload)
+        assertEquals(4, records.size)
+        assertEquals(0, records[0].status)
+        assertEquals(1, records[1].status)
+        assertEquals(2, records[2].status)
+        assertEquals(3, records[3].status)
+        // statusBit stays == bit 0 of status for backward compatibility
+        assertFalse(records[2].statusBit)
+        assertTrue(records[3].statusBit)
+        // glucose low bits unaffected (b0=0x42, b1&0x03=0)
+        assertEquals(0x42, records[3].glucoseMgDl)
+    }
+
+    @Test
     fun testParseHistoryResponse_TooShort() {
         assertEquals(0, AiDexParser.parseHistoryResponse(byteArrayOf()).size)
         assertEquals(0, AiDexParser.parseHistoryResponse(byteArrayOf(0x00)).size)

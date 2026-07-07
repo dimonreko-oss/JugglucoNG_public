@@ -17,6 +17,13 @@ data class GlucoseFrame(
     val glucoseMgDl: Float,
     /** Raw 10-bit glucose value before scaling */
     val rawGlucosePacked: Int,
+    /**
+     * Vendor `status` field: upper 2 bits [11:10] of the glucose word (0..3).
+     * Confirmed as the `status` member of AidexXHistoryEntity in the 0x11/0x23
+     * vendor parsers; the 10-bit glucose occupies bits [9:0]. Distinct from the
+     * directional trend byte and from the separate per-sample `quality` byte.
+     */
+    val status: Int = 0,
     /** Raw channel 1 value (i1 = u16le([8..9]) / 100) */
     val i1: Float,
     /** Raw channel 2 value (i2 = u16le([10..11]) / 100) */
@@ -44,8 +51,14 @@ data class CalibratedHistoryEntry(
     val timeOffsetMinutes: Int,
     /** Glucose value in mg/dL (10-bit, 0-1023) */
     val glucoseMgDl: Int,
-    /** Status bit from byte[1] & 0x04 */
+    /** Status bit from byte[1] & 0x04 (== bit 0 of [status] below) */
     val statusBit: Boolean,
+    /**
+     * Full vendor `status` field: bits [11:10] of the 10-bit glucose word (0..3).
+     * `statusBit` is only bit 0 of this; the vendor 0x23 parser exposes both bits
+     * (AidexXHistoryEntity.status). Kept additive so existing callers are unaffected.
+     */
+    val status: Int = 0,
     /** Whether this is the sentinel (1023 = no reading) */
     val isSentinel: Boolean,
 )

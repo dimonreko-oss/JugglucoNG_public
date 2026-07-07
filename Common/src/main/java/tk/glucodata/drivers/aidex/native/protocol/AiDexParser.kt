@@ -70,6 +70,9 @@ object AiDexParser {
         val timeOffsetMinutes = (u32LE(data, 1) / 60L).toInt()
         val glucosePacked = u16LE(data, 6)
         val rawGlucose = glucosePacked and AiDexOpcodes.GLUCOSE_MASK
+        // Vendor `status` field: bits [11:10] above the 10-bit glucose. Same packing
+        // the AidexXParser uses for 0x11/0x23 words; rawGlucosePacked retains the full u16.
+        val status = (glucosePacked shr 10) and 0x3
         val i1Raw = u16LE(data, 8)
         val i2Raw = u16LE(data, 10)
         val crc16 = u16LE(data, 15)
@@ -90,6 +93,7 @@ object AiDexParser {
             timeOffsetMinutes = timeOffsetMinutes,
             glucoseMgDl = glucoseMgDl,
             rawGlucosePacked = glucosePacked,
+            status = status,
             i1 = i1,
             i2 = i2,
             crc16 = crc16,
@@ -130,12 +134,15 @@ object AiDexParser {
 
             val glucose = b0 or ((b1 and 0x03) shl 8)
             val statusBit = (b1 and 0x04) != 0
+            // Full vendor `status` field: glucose bits [11:10] = b1 bits [3:2].
+            val status = (b1 shr 2) and 0x3
             val isSentinel = glucose == AiDexOpcodes.SENTINEL_GLUCOSE
 
             CalibratedHistoryEntry(
                 timeOffsetMinutes = startOffset + i,
                 glucoseMgDl = glucose,
                 statusBit = statusBit,
+                status = status,
                 isSentinel = isSentinel,
             )
         }
