@@ -1388,6 +1388,10 @@ class DashboardViewModel(
         refreshNotificationPredictionSurfaces(context)
     }
 
+    fun refreshNotificationSurfaces() {
+        refreshNotificationPredictionSurfaces(tk.glucodata.Applic.app)
+    }
+
     private fun refreshNotificationPredictionSurfaces(context: android.content.Context) {
         tk.glucodata.Notify.showoldglucose()
         context.sendBroadcast(
