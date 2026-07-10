@@ -162,7 +162,7 @@ class SibionicsAlgorithmContext(
 
     private companion object {
         private const val SNAPSHOT_MAGIC = 0x5349_4234
-        private const val SNAPSHOT_VERSION = 1
+        private const val SNAPSHOT_VERSION = 2
         private const val MAX_CORE_SNAPSHOT_BYTES = 64 * 1024
         private const val MIN_ALGORITHM_MMOL = 1f
         private const val MAX_VALID_MMOL = 50f

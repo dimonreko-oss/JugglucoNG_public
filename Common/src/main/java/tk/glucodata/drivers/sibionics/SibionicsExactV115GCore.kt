@@ -381,7 +381,7 @@ internal class SibionicsExactV115GCore(
     private var kalman = Kalman()
     private var temperature = Temperature()
     private var filters = Filters()
-    private var clip = ExactV115GClip(sensitivity)
+    private var clip = ExactV115GClip()
     private var esa = Esa()
     private var deconvolution = Deconvolution()
     private var temperatureUpCount = 0
@@ -410,7 +410,7 @@ internal class SibionicsExactV115GCore(
         kalman = Kalman()
         temperature = Temperature()
         filters = Filters()
-        clip = ExactV115GClip(sensitivity)
+        clip = ExactV115GClip()
         esa = Esa()
         deconvolution = Deconvolution()
         temperatureUpCount = 0
@@ -732,7 +732,7 @@ internal class SibionicsExactV115GCore(
     private companion object {
         private const val DEFAULT_DECODED_SENSITIVITY = 1.27f
         private const val SNAPSHOT_MAGIC = 0x5349_4233
-        private const val SNAPSHOT_VERSION = 1
+        private const val SNAPSHOT_VERSION = 2
         private const val MAX_CLIP_SNAPSHOT_BYTES = 8 * 1024
 
         private val COEFFICIENTS = floatArrayOf(

@@ -25,15 +25,18 @@ private fun writeF32(p: Ptr, value: Double) = writeI32(p, value.toFloat().toRawB
 private fun readF64(p: Ptr): Double = Double.fromBits(readI64(p))
 private fun writeF64(p: Ptr, value: Double) = writeI64(p, value.toRawBits())
 
-private fun initClipContext(p: Ptr, sensitivity: Double) {
+private fun initClipContext(p: Ptr) {
     p.bytes.fill(0)
     writeI64(p.plus(0x000), 0x4120000042c80000L)
     writeI64(p.plus(0x134), 0x4120000041c80000L)
     writeI64(p.plus(0x13c), 0x4120000000000000L)
-    for (off in intArrayOf(0x158, 0x15c, 0x160, 0x164, 0x178, 0x180, 0x270)) writeF32(p.plus(off), 10.0)
+    for (off in intArrayOf(0x158, 0x15c, 0x160, 0x164, 0x178, 0x180)) writeF32(p.plus(off), 10.0)
+    // 0x270 is an integer counter; the constructor's trailing 10.0f is at 0x274.
+    writeF32(p.plus(0x274), 10.0)
     writeF32(p.plus(0x1e4), 100.0)
-    writeF32(p.plus(0x208), sensitivity)
-    writeF32(p.plus(0x20c), sensitivity)
+    // The clipping seed is fixed and independent of the decoded per-sensor sensitivity.
+    writeF32(p.plus(0x208), 1.5)
+    writeF32(p.plus(0x20c), 1.5)
     writeI64(p.plus(0x214), 0x4248000000000000L)
     writeF32(p.plus(0x21c), 50.0)
     writeF32(p.plus(0x268), 100.0)
@@ -21564,13 +21567,13 @@ internal data class ExactV115GClipResult(
  * Calibration_baseline trio.  The three byte arrays intentionally preserve the
  * recovered native layout; do not replace them with field-by-field state.
  */
-internal class ExactV115GClip(initialSensitivity: Float) {
+internal class ExactV115GClip {
     private val clip = Ptr(ByteArray(CLIP_SIZE))
     private val adjustment = Ptr(ByteArray(ADJUSTMENT_SIZE))
     private val calibration = Ptr(ByteArray(CALIBRATION_SIZE))
 
     init {
-        initClipContext(clip, initialSensitivity.toDouble())
+        initClipContext(clip)
         initCalibrationContext(calibration)
     }
 
@@ -21659,6 +21662,6 @@ internal class ExactV115GClip(initialSensitivity: Float) {
         private const val HEADER_SIZE = 20
         private const val SNAPSHOT_SIZE = HEADER_SIZE + CLIP_SIZE + ADJUSTMENT_SIZE + CALIBRATION_SIZE
         private const val SNAPSHOT_MAGIC = 0x53434c50 // "SCLP" little-endian raw marker
-        private const val SNAPSHOT_VERSION = 1
+        private const val SNAPSHOT_VERSION = 2
     }
 }
