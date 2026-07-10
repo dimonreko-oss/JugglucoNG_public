@@ -1165,7 +1165,9 @@ fun DashboardScreen(
                             sensorProgress = sensorProgress,
                             sensorHoursRemaining = sensorHoursRemaining,
                             currentDay = currentDay,
-                            history = consumerHistory, // Advanced Trend (smoothed when active)
+                            history = glucoseHistory, // Trend must see measured data: visual smoothing
+                            // reshapes the recent slope, and the notification/broadcast
+                            // arrow computes from unsmoothed history
                             calibratedValue = calibratedValue,
                             currentSnapshot = dashboardCurrentSnapshot,
                             dataState = dashboardDataState,
@@ -1400,7 +1402,9 @@ fun DashboardScreen(
                             sensorProgress = sensorProgress,
                             sensorHoursRemaining = sensorHoursRemaining,
                             currentDay = currentDay,
-                            history = consumerHistory, // Advanced Trend (smoothed when active)
+                            history = glucoseHistory, // Trend must see measured data: visual smoothing
+                            // reshapes the recent slope, and the notification/broadcast
+                            // arrow computes from unsmoothed history
                             calibratedValue = calibratedValue,
                             currentSnapshot = dashboardCurrentSnapshot,
                             dataState = dashboardDataState,
