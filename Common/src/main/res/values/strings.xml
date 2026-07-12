@@ -894,7 +894,7 @@ Pressing OK will generate a connection on this phone and display a QR code that 
     <string name="sibionics_custom_algorithm">Adaptive sensor model (experimental)</string>
     <string name="sibionics_custom_algorithm_desc">Stateful filtering, sensor-quality weighting and anomaly rejection</string>
     <string name="sibionics_stock_algorithm_desc">Stock sensor model</string>
-    <string name="sibionics_stock_algorithm_detail">Use meter calibrations inside the sensor algorithm</string>
+    <string name="sibionics_stock_algorithm_detail">Use calibrations inside the sensor algorithm</string>
     <string name="sibionics_restart_algorithm_desc">Rebuild the one-minute algorithm state from saved sensor history</string>
     <string name="juggluco_native">Juggluco native</string>
     <string name="window_label">window</string>

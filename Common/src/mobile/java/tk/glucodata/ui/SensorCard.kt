@@ -198,6 +198,7 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.LifecycleEventObserver
 import tk.glucodata.ui.components.CardPosition
+import tk.glucodata.ui.components.CompactSheetDragHandle
 import tk.glucodata.ui.components.MasterSwitchCard
 import tk.glucodata.ui.components.SectionLabel
 import tk.glucodata.ui.components.SettingsItem
@@ -813,15 +814,13 @@ fun SensorCard(
         }
     }
 
-    // Both managed modes keep the exact sensor chemistry model and integrate
-    // calibration in the driver. Adaptive mode additionally maintains quality-
-    // weighted glucose and velocity state.
+    // Independent, immediately applied sensor-algorithm features.
     if (showSibionicsCalSheet && sensor.isSibionics && sensor.viewMode != 1) {
         @OptIn(ExperimentalMaterial3Api::class)
         ModalBottomSheet(
             onDismissRequest = { showSibionicsCalSheet = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            dragHandle = { BottomSheetDefaults.DragHandle() }
+            dragHandle = { CompactSheetDragHandle() }
         ) {
             Column(
                 modifier = Modifier
@@ -848,66 +847,33 @@ fun SensorCard(
                     viewModel.setSibionicsAlgorithmMode(sensor.serial, updated)
                 }
 
-                listOf(1, 2).forEachIndexed { optionIndex, featureBit ->
-                    val adaptive = featureBit == 2
-                    val enabled = algorithmFeatures and featureBit != 0
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = if (enabled) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                                else MaterialTheme.colorScheme.surfaceContainerHighest,
-                        border = if (enabled)
-                            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
-                        else null,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { setFeature(featureBit, !enabled) }
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = if (adaptive) Icons.Default.Tune else Icons.Default.Science,
-                                contentDescription = null,
-                                tint = if (enabled) MaterialTheme.colorScheme.primary
-                                       else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(28.dp)
-                            )
-                            Spacer(modifier = Modifier.width(16.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    stringResource(
-                                        if (adaptive) R.string.sibionics_custom_algorithm
-                                        else R.string.calibration
-                                    ),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    stringResource(
-                                        if (adaptive) R.string.sibionics_custom_algorithm_desc
-                                        else R.string.sibionics_stock_algorithm_detail
-                                    ),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            StyledSwitch(
-                                checked = enabled,
-                                onCheckedChange = { setFeature(featureBit, it) },
-                            )
-                        }
-                    }
-                    if (optionIndex == 0) Spacer(modifier = Modifier.height(12.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    SettingsSwitchItem(
+                        title = stringResource(R.string.calibration),
+                        subtitle = stringResource(R.string.sibionics_stock_algorithm_detail),
+                        checked = algorithmFeatures and 1 != 0,
+                        onCheckedChange = { setFeature(1, it) },
+                        icon = Icons.Default.Science,
+                        iconTint = MaterialTheme.colorScheme.primary,
+                        position = CardPosition.TOP,
+                    )
+                    SettingsSwitchItem(
+                        title = stringResource(R.string.sibionics_custom_algorithm),
+                        subtitle = stringResource(R.string.sibionics_custom_algorithm_desc),
+                        checked = algorithmFeatures and 2 != 0,
+                        onCheckedChange = { setFeature(2, it) },
+                        icon = Icons.Default.Tune,
+                        iconTint = MaterialTheme.colorScheme.tertiary,
+                        position = CardPosition.BOTTOM,
+                    )
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
-                TextButton(
+                Spacer(modifier = Modifier.height(24.dp))
+                Button(
                     onClick = { showSibionicsCalSheet = false },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text(stringResource(R.string.cancel)) }
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                ) { Text(stringResource(R.string.close)) }
             }
         }
     }
