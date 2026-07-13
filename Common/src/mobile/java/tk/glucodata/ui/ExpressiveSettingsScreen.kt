@@ -2210,6 +2210,7 @@ private fun LanguagePickerDialog(onDismiss: () -> Unit) {
         "Portuguese" to "pt",
         "Russian" to "ru",
         "Swedish" to "sv",
+        "Somali" to "so",
         "Turkish" to "tr",
         "Ukrainian" to "uk",
         "Mongolian" to "mn",
