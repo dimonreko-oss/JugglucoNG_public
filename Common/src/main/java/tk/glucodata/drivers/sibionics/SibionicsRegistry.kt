@@ -61,12 +61,16 @@ object SibionicsRegistry {
     ): SetupIdentity {
         val normalizedBle = SibionicsConstants.normalizeBleName(bleName)
         val normalizedRaw = SibionicsConstants.normalizeBleName(rawInput)
+        // The native V120 identity window is defined against the framed QR payload. Keep GS
+        // separators here: normalizing first shortens a 65-byte payload and selects the wrong
+        // extraction branch, shifting both the leading and trailing identity characters.
+        val framedQrName = deriveNativeQrName(rawInput)
         val source = when {
             normalizedRaw.isNotBlank() -> normalizedRaw
             normalizedBle.isNotBlank() -> normalizedBle
             else -> variant.displayLabel
         }
-        val qrName = deriveNativeQrName(source)
+        val qrName = framedQrName ?: deriveNativeQrName(source)
         val qrShortView = qrName?.takeLast(11)?.takeIf { it.length == 11 }
         val resolvedBleName = deriveBleName(normalizedBle.takeIf { it.isNotBlank() } ?: source).orEmpty()
         val display = qrShortView ?: deriveDisplayName(source, variant)
@@ -480,7 +484,6 @@ object SibionicsRegistry {
 
     private fun cleanQrPayload(source: String?): String =
         source.orEmpty()
-            .trim()
             .uppercase(java.util.Locale.US)
             .replace("^]", "\u001D")
             .filter { it.isLetterOrDigit() || it == '\u001D' }

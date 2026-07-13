@@ -82,6 +82,7 @@ class SibionicsBleManager(
         private const val MIN_REASONABLE_TIME_MS = 946_684_800_000L
         private const val ALGORITHM_REBUILD_DEBOUNCE_MS = 600L
         private const val LOCAL_REBUILD_FORMAT_VERSION = 6
+        private const val POST_RESET_DISCARD_TIMEOUT_MS = 15_000L
 
         private fun sampleJournalFile(context: Context, sensorId: String): File {
             val digest = MessageDigest.getInstance("SHA-256")
@@ -113,6 +114,8 @@ class SibionicsBleManager(
     @Volatile private var sessionKey: ByteArray? = null
     @Volatile private var keyGroupIndex: Int = 0
     @Volatile private var pendingResetCommand: Boolean = false
+    @Volatile private var discardNotificationsUntilResetDisconnect: Boolean = false
+    @Volatile private var loggedDiscardedPostResetNotification: Boolean = false
     @Volatile private var uiPaused: Boolean = false
     @Volatile private var pendingMatchedBleName: String = ""
     @Volatile private var autoResetDays: Int = 300
@@ -171,10 +174,10 @@ class SibionicsBleManager(
             mActiveDeviceAddress = it.address.ifBlank { null }
         }
         variant = SibionicsRegistry.loadVariant(context, SerialNumber)
-        protocolMode = SibionicsRegistry.loadProtocolMode(context, SerialNumber)
-        if (protocolMode == SibionicsConstants.ProtocolMode.UNKNOWN && variant.prefersChineseProbe) {
-            protocolMode = SibionicsConstants.ProtocolMode.CHINESE
-        }
+        protocolMode = SibionicsConstants.initialProtocolMode(
+            variant,
+            SibionicsRegistry.loadProtocolMode(context, SerialNumber),
+        )
         shortCode = SibionicsRegistry.loadShortCode(context, SerialNumber)
         sensitivity = SibionicsSensitivity.sensitivityFor(shortCode)
         autoResetDays = SibionicsRegistry.loadAutoResetDays(context, SerialNumber)
@@ -401,6 +404,7 @@ class SibionicsBleManager(
 
             BluetoothProfile.STATE_DISCONNECTED -> {
                 Log.i(SibionicsConstants.TAG, "disconnected status=$status serial=$SerialNumber")
+                finishPostResetDisconnectGuard()
                 service = null
                 notifyChar = null
                 writeChar = null
@@ -495,6 +499,13 @@ class SibionicsBleManager(
 
     private fun handleIncoming(bytes: ByteArray) {
         if (bytes.isEmpty()) return
+        if (discardNotificationsUntilResetDisconnect) {
+            if (!loggedDiscardedPostResetNotification) {
+                loggedDiscardedPostResetNotification = true
+                Log.i(SibionicsConstants.TAG, "discarding buffered pre-reset notifications until disconnect")
+            }
+            return
+        }
         if (bytes.size >= 2 && bytes[0] == 0xAA.toByte() && bytes[1] == 0x55.toByte()) {
             handleChinese(SibionicsProtocol.parseChinese(bytes))
             return
@@ -554,6 +565,7 @@ class SibionicsBleManager(
         when (result) {
             is SibionicsProtocol.ParseResult.Handshake -> handleV120Handshake(result.response)
             is SibionicsProtocol.ParseResult.V120Data -> {
+                confirmProtocolMode(SibionicsConstants.ProtocolMode.V120)
                 handler.removeCallbacks(handshakeTimeoutRunnable)
                 phase = Phase.STREAMING
                 updateV120HistoryProgress(result.entries)
@@ -615,6 +627,13 @@ class SibionicsBleManager(
         Applic.app?.let { SibionicsRegistry.saveProtocolMode(it, SerialNumber, protocolMode) }
         Log.i(SibionicsConstants.TAG, "switching to V120: $reason")
         sendAuthPacket()
+    }
+
+    private fun confirmProtocolMode(mode: SibionicsConstants.ProtocolMode) {
+        if (protocolMode == mode) return
+        protocolMode = mode
+        Applic.app?.let { SibionicsRegistry.saveProtocolMode(it, SerialNumber, mode) }
+        UiRefreshBus.requestStatusRefresh()
     }
 
     private fun sendAuthPacket() {
@@ -1354,6 +1373,10 @@ class SibionicsBleManager(
     }
 
     private fun markResetSent() {
+        discardNotificationsUntilResetDisconnect = true
+        loggedDiscardedPostResetNotification = false
+        handler.removeCallbacks(postResetDiscardTimeoutRunnable)
+        handler.postDelayed(postResetDiscardTimeoutRunnable, POST_RESET_DISCARD_TIMEOUT_MS)
         rebuildGeneration++
         synchronized(algorithmLock) { algorithm.reset() }
         sampleJournal?.clear()
@@ -1383,6 +1406,20 @@ class SibionicsBleManager(
         algorithmStateDirty = false
         setStatus("Reset sent")
         UiRefreshBus.requestStatusRefresh()
+    }
+
+    private val postResetDiscardTimeoutRunnable = Runnable {
+        if (!discardNotificationsUntilResetDisconnect) return@Runnable
+        Log.w(SibionicsConstants.TAG, "reset disconnect timeout; forcing a clean reconnect")
+        discardNotificationsUntilResetDisconnect = false
+        loggedDiscardedPostResetNotification = false
+        scheduleReconnect("reset disconnect timeout")
+    }
+
+    private fun finishPostResetDisconnectGuard() {
+        handler.removeCallbacks(postResetDiscardTimeoutRunnable)
+        discardNotificationsUntilResetDisconnect = false
+        loggedDiscardedPostResetNotification = false
     }
 
     override fun supportsClearCalibrationAction(): Boolean = false
@@ -1501,7 +1538,7 @@ class SibionicsBleManager(
             sensorRemainingHours = remainingHours(),
             sensorAgeHours = ageHours(),
             vendorModel = variant.displayLabel,
-            vendorFirmware = protocolMode.name,
+            vendorFirmware = SibionicsConstants.initialProtocolMode(variant, protocolMode).name,
         )
 
     override fun getDetailedBleStatus(): String {
