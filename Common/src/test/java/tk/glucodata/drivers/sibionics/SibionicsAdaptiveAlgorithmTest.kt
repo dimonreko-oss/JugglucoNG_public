@@ -1,5 +1,6 @@
 package tk.glucodata.drivers.sibionics
 
+import kotlin.math.abs
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -135,17 +136,156 @@ class SibionicsAdaptiveAlgorithmTest {
     }
 
     @Test
-    fun telemetryAnomalyDoesNotBecomeAFullOneMinuteGlucoseJump() {
+    fun telemetryAnomalyCannotMakeTheModelOverrideStockBySixMmol() {
         val context = SibionicsAdaptiveAlgorithmContext().apply { configure(1.4f) }
         repeat(6) { offset ->
             context.process(6f, 3f, 34f, 100f, offset + 1, (offset + 1) * 60_000L, emptyList())
         }
         val anomalous = context.process(12f, 9f, 50f, 10_000f, 7, 420_000L, emptyList())
-        assertTrue("anomalous=$anomalous", anomalous in 6f..9.5f)
+        assertEquals(12f, anomalous, 0.001f)
     }
 
     @Test
-    fun snapshotRestoresAdaptiveGlucoseAndVelocityState() {
+    fun startupTransientStaysOnTheQrAnchoredStockMeasurement() {
+        val context = SibionicsAdaptiveAlgorithmContext().apply { configure(1.4f) }
+        val stock = floatArrayOf(29f, 29.3f, 12.3f, 8.6f, 8f)
+        val adaptive = stock.mapIndexed { offset, value ->
+            val index = offset + 1
+            context.process(value, value, 34f, 100f, index, index * 60_000L, emptyList())
+        }
+
+        assertEquals(stock.toList(), adaptive)
+    }
+
+    @Test
+    fun sustainedCoherentRiseRemainsResponsiveWithoutForecastOvershoot() {
+        val context = SibionicsAdaptiveAlgorithmContext().apply { configure(1.4f) }
+        repeat(10) { offset ->
+            val index = offset + 1
+            context.process(6f, 8.4f, 34f, 100f, index, index * 60_000L, emptyList())
+        }
+        var stock = 6f
+        var raw = 8.4f
+        var adaptive = 6f
+        repeat(8) { offset ->
+            stock += 0.25f
+            raw += 0.35f
+            val index = 11 + offset
+            adaptive = context.process(stock, raw, 34f, 100f, index, index * 60_000L, emptyList())
+        }
+
+        assertTrue("stock=$stock adaptive=$adaptive", adaptive >= stock - 0.2f)
+        assertTrue("stock=$stock adaptive=$adaptive", adaptive <= stock + 0.1f)
+    }
+
+    @Test
+    fun alternatingStockNoiseIsNotAmplifiedOrShifted() {
+        val context = SibionicsAdaptiveAlgorithmContext().apply { configure(1.4f) }
+        repeat(8) { offset ->
+            val index = offset + 1
+            context.process(6f, 8.4f, 34f, 100f, index, index * 60_000L, emptyList())
+        }
+        val stock = floatArrayOf(6.4f, 5.7f, 6.3f, 5.8f, 6.35f, 5.75f, 6.25f, 5.85f)
+        val adaptive = stock.mapIndexed { offset, value ->
+            val index = offset + 9
+            context.process(value, value * 1.4f, 34f, 100f, index, index * 60_000L, emptyList())
+        }
+        val stockDeviation = stock.map { abs(it - 6f) }.average()
+        val adaptiveDeviation = adaptive.map { abs(it - 6f) }.average()
+
+        assertTrue(
+            "stockDeviation=$stockDeviation adaptiveDeviation=$adaptiveDeviation adaptive=$adaptive",
+            adaptiveDeviation <= stockDeviation * 1.05,
+        )
+        assertTrue("adaptive=$adaptive", abs(adaptive.average() - 6.0) < 0.2)
+    }
+
+    @Test
+    fun oneTenthQuantisationOscillationIsAttenuatedInsteadOfAmplified() {
+        val context = SibionicsAdaptiveAlgorithmContext().apply { configure(1.4f) }
+        repeat(8) { offset ->
+            val index = offset + 1
+            context.process(6f, 8.4f, 34f, 100f, index, index * 60_000L, emptyList())
+        }
+        val stock = FloatArray(12) { if (it % 2 == 0) 6.1f else 5.9f }
+        val adaptive = stock.mapIndexed { offset, value ->
+            val index = offset + 9
+            context.process(value, value * 1.4f, 34f, 100f, index, index * 60_000L, emptyList())
+        }
+        val stockMotion = stock.asList().zipWithNext { before, after -> abs(after - before) }.sum()
+        val adaptiveMotion = adaptive.zipWithNext { before, after -> abs(after - before) }.sum()
+
+        assertTrue("stock=$stockMotion adaptive=$adaptiveMotion values=$adaptive", adaptiveMotion < stockMotion)
+        assertTrue("adaptive=$adaptive", adaptive.all { abs(it - 6f) <= 0.1f })
+    }
+
+    @Test
+    fun coherentHighQualityFallIntoLowRangeIsNotHiddenAsAnArtifact() {
+        val context = SibionicsAdaptiveAlgorithmContext().apply { configure(1.4f) }
+        repeat(8) { offset ->
+            val index = offset + 1
+            context.process(6.5f, 9.1f, 34f, 100f, index, index * 60_000L, emptyList())
+        }
+        val falling = floatArrayOf(5.8f, 4.9f, 4.1f, 3.5f, 3.1f)
+        val adaptive = falling.mapIndexed { offset, value ->
+            val index = offset + 9
+            context.process(value, value * 1.4f, 34f, 100f, index, index * 60_000L, emptyList())
+        }
+
+        assertTrue("adaptive=$adaptive", adaptive.last() <= 3.6f)
+        assertTrue("adaptive=$adaptive", adaptive.last() >= 2.5f)
+        assertEquals(falling.last(), adaptive.last(), 0.001f)
+    }
+
+    @Test
+    fun qrScaledRawTrendOnlyProvidesBoundedDirectionalSupport() {
+        val coherent = SibionicsAdaptiveAlgorithmContext().apply { configure(1.4f) }
+        val disagreeing = SibionicsAdaptiveAlgorithmContext().apply { configure(1.4f) }
+        repeat(8) { offset ->
+            val index = offset + 1
+            coherent.process(6f, 8.4f, 34f, 100f, index, index * 60_000L, emptyList())
+            disagreeing.process(6f, 8.4f, 34f, 100f, index, index * 60_000L, emptyList())
+        }
+        var stock = 6f
+        var coherentRaw = 8.4f
+        var disagreeingRaw = 8.4f
+        var coherentOutput = 6f
+        var disagreeingOutput = 6f
+        repeat(7) { offset ->
+            val index = offset + 9
+            stock += 0.25f
+            coherentRaw += 0.35f
+            disagreeingRaw -= 0.12f
+            coherentOutput = coherent.process(
+                stock, coherentRaw, 34f, 100f, index, index * 60_000L, emptyList(),
+            )
+            disagreeingOutput = disagreeing.process(
+                stock, disagreeingRaw, 34f, 100f, index, index * 60_000L, emptyList(),
+            )
+        }
+
+        assertTrue("coherent=$coherentOutput stock=$stock", abs(coherentOutput - stock) <= 0.2f)
+        assertTrue("disagreeing=$disagreeingOutput stock=$stock", abs(disagreeingOutput - stock) <= 0.2f)
+        assertTrue(
+            "coherent=$coherentOutput disagreeing=$disagreeingOutput",
+            coherentOutput >= disagreeingOutput,
+        )
+    }
+
+    @Test
+    fun invalidMeasurementDoesNotInventOrAdvanceAReading() {
+        val context = SibionicsAdaptiveAlgorithmContext().apply { configure(1.4f) }
+        context.process(6f, 8.4f, 34f, 100f, 1, 60_000L, emptyList())
+
+        val missing = context.process(Float.NaN, 8.5f, 34f, 100f, 2, 120_000L, emptyList())
+        val recovered = context.process(6.1f, 8.54f, 34f, 100f, 3, 180_000L, emptyList())
+
+        assertTrue(missing.isNaN())
+        assertTrue("recovered=$recovered", recovered in 5.8f..6.4f)
+    }
+
+    @Test
+    fun snapshotRestoresAdaptiveLevelAndTrendState() {
         val original = SibionicsAdaptiveAlgorithmContext().apply { configure(1.4f) }
         repeat(8) { offset ->
             val index = offset + 1

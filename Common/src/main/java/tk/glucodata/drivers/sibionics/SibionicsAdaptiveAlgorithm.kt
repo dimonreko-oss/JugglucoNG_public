@@ -4,7 +4,6 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
-import java.util.ArrayDeque
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
@@ -21,20 +20,23 @@ data class SibionicsCalibrationAnchor(
  * exact Sibionics core. The exact core remains the per-sensor chemical model;
  * this context treats its result as a measurement and combines it with raw
  * current direction, temperature/impedance quality and robust calibration
- * anchors in a persistent glucose/velocity state estimator.
+ * anchors in a persistent, bounded one-minute tracker. It deliberately does
+ * not forecast beyond the exact model: the adaptive layer only attenuates
+ * small quantisation noise and yields immediately on clinically important
+ * motion.
  */
 internal class SibionicsAdaptiveAlgorithmContext {
     private var decodedSensitivity = DEFAULT_SENSITIVITY
     private var initialized = false
-    private var glucose = Float.NaN
-    private var velocity = 0f
+    private var level = Float.NaN
+    private var trend = 0f
     private var lastMeasurement = Float.NaN
     private var lastRaw = Float.NaN
     private var lastTemperature = Float.NaN
     private var impedanceBaseline = Float.NaN
     private var lastTimestampMs = 0L
     private var lastIndex = -1
-    private val innovations = ArrayDeque<Float>(INNOVATION_WINDOW)
+    private var samplesSinceReset = 0
 
     fun configure(sensitivity: Float) {
         decodedSensitivity = sensitivity.takeIf { it.isFinite() && it in 0.5f..3.5f }
@@ -43,15 +45,15 @@ internal class SibionicsAdaptiveAlgorithmContext {
 
     fun reset() {
         initialized = false
-        glucose = Float.NaN
-        velocity = 0f
+        level = Float.NaN
+        trend = 0f
         lastMeasurement = Float.NaN
         lastRaw = Float.NaN
         lastTemperature = Float.NaN
         impedanceBaseline = Float.NaN
         lastTimestampMs = 0L
         lastIndex = -1
-        innovations.clear()
+        samplesSinceReset = 0
     }
 
     fun process(
@@ -66,10 +68,11 @@ internal class SibionicsAdaptiveAlgorithmContext {
         if (!stockMmol.isFinite() || stockMmol <= 0f) return Float.NaN
 
         val measurement = applyIntegratedCalibration(stockMmol, eventTimeMs, anchors)
-        if (!initialized || index <= 1 || index <= lastIndex || !glucose.isFinite()) {
+        if (!initialized || index <= 1 || index <= lastIndex) {
+            reset()
             initialized = true
-            glucose = measurement
-            velocity = 0f
+            level = measurement
+            samplesSinceReset = 1
             updateTelemetry(rawMmol, temperatureC, impedance, index, eventTimeMs, measurement)
             return roundTenth(measurement)
         }
@@ -80,57 +83,51 @@ internal class SibionicsAdaptiveAlgorithmContext {
             index > lastIndex -> (index - lastIndex).toFloat().coerceIn(1f, 3f)
             else -> 1f
         }
-        val quality = signalQuality(temperatureC, impedance)
-        val predicted = glucose + velocity * elapsedMinutes
-        var innovation = measurement - predicted
+        val signal = signalQuality(temperatureC, impedance)
+        val latestStep = if (lastMeasurement.isFinite()) measurement - lastMeasurement else 0f
+        val predicted = level + trend * elapsedMinutes
+        val innovation = measurement - predicted
+        val rapidChange = (abs(innovation) / RAPID_INNOVATION_MMOL).coerceIn(0f, 1f)
+        val alpha = BASE_LEVEL_GAIN + (MAX_LEVEL_GAIN - BASE_LEVEL_GAIN) * rapidChange
+        level = predicted + alpha * innovation
 
-        if (innovations.size >= 5) {
-            val median = median(innovations.toFloatArray())
-            val deviations = innovations.map { abs(it - median) }.toFloatArray()
-            val scale = max(MIN_INNOVATION_SCALE, median(deviations))
-            val robustLimit = max(MIN_INNOVATION_LIMIT, scale * 3f)
-            if (quality < 0.75f && abs(innovation - median) > robustLimit) {
-                innovation = median + (innovation - median).coerceIn(-robustLimit, robustLimit)
-            }
-        }
-        innovation = innovation.coerceIn(-MAX_INNOVATION, MAX_INNOVATION)
-
-        val rapidChange = (abs(innovation) / 1.2f).coerceIn(0f, 1f)
-        val rawVelocity = if (rawMmol.isFinite() && lastRaw.isFinite()) {
+        val rawTrend = if (rawMmol.isFinite() && lastRaw.isFinite()) {
             ((rawMmol - lastRaw) / decodedSensitivity / elapsedMinutes)
-                .coerceIn(-MAX_VELOCITY, MAX_VELOCITY)
+                .coerceIn(-MAX_TREND_RATE, MAX_TREND_RATE)
         } else {
-            0f
+            Float.NaN
         }
-        val directionAgreement = when {
-            abs(rawVelocity) < 0.015f || abs(innovation) < 0.08f -> 0f
-            rawVelocity * innovation > 0f -> 1f
-            else -> -1f
+        val rawCoherent = rawTrend.isFinite() && (
+            abs(latestStep) < MIN_DIRECTION_STEP || abs(rawTrend) < MIN_RAW_TREND_RATE ||
+                latestStep * rawTrend > 0f
+            )
+        val rawWeight = if (rawCoherent) RAW_TREND_WEIGHT * signal.overall else 0f
+        val innovationTrend = TREND_GAIN * innovation.coerceIn(-MAX_TREND_INNOVATION, MAX_TREND_INNOVATION) /
+            elapsedMinutes
+        val rawContribution = if (rawTrend.isFinite()) rawTrend * rawWeight else 0f
+        trend = ((trend + innovationTrend) * (1f - rawWeight) +
+            rawContribution)
+            .coerceIn(-MAX_TREND_RATE, MAX_TREND_RATE)
+        samplesSinceReset++
+
+        val turning = abs(latestStep) >= TURN_STEP_MMOL && latestStep * trend < 0f
+        val exactPassThrough = samplesSinceReset <= STARTUP_PASSTHROUGH_SAMPLES ||
+            abs(latestStep) >= LARGE_STEP_MMOL || measurement <= LOW_EXACT_MMOL ||
+            turning || signal.telemetryAnomaly
+        var output = if (exactPassThrough) {
+            level = measurement
+            if (abs(latestStep) >= LARGE_STEP_MMOL || signal.telemetryAnomaly) trend = 0f
+            measurement
+        } else {
+            level.coerceIn(
+                measurement - MAX_TRACKING_DISTANCE_MMOL,
+                measurement + MAX_TRACKING_DISTANCE_MMOL,
+            )
         }
-        val alpha = (0.34f + quality * 0.30f + rapidChange * 0.18f + directionAgreement * 0.06f)
-            .coerceIn(0.18f, 0.84f)
-        val beta = (0.055f + quality * 0.12f + rapidChange * 0.07f)
-            .coerceIn(0.04f, 0.24f)
+        if (measurement < LOW_FALL_GUARD_MMOL && latestStep < 0f) {
+            output = min(output, measurement)
+        }
 
-        glucose = predicted + alpha * innovation
-        val innovationVelocity = beta * innovation / elapsedMinutes
-        velocity = (velocity * 0.72f + innovationVelocity + rawVelocity * quality * 0.20f)
-            .coerceIn(-MAX_VELOCITY, MAX_VELOCITY)
-
-        val lead = (velocity * (0.25f + quality * 0.25f)).coerceIn(-MAX_TREND_LEAD, MAX_TREND_LEAD)
-        // A trustworthy stock measurement keeps the adaptive estimate close to
-        // the sensor chemistry model. Low-quality telemetry must widen this
-        // guard, otherwise an anomalous measurement would override the robust
-        // innovation clamp above and drag the output toward itself.
-        val safetyDistance = max(MIN_OUTPUT_DISTANCE, measurement * MAX_OUTPUT_DISTANCE_FRACTION) *
-            (1f + (1f - quality) * LOW_QUALITY_SAFETY_EXPANSION)
-        val output = (glucose + lead).coerceIn(
-            measurement - safetyDistance,
-            measurement + safetyDistance,
-        )
-
-        innovations.addLast(innovation)
-        while (innovations.size > INNOVATION_WINDOW) innovations.removeFirst()
         updateTelemetry(rawMmol, temperatureC, impedance, index, eventTimeMs, measurement)
         return roundTenth(max(output, 0f))
     }
@@ -141,43 +138,50 @@ internal class SibionicsAdaptiveAlgorithmContext {
             output.writeInt(SNAPSHOT_VERSION)
             output.writeFloat(decodedSensitivity)
             output.writeBoolean(initialized)
-            output.writeFloat(glucose)
-            output.writeFloat(velocity)
+            output.writeFloat(level)
+            output.writeFloat(trend)
             output.writeFloat(lastMeasurement)
             output.writeFloat(lastRaw)
             output.writeFloat(lastTemperature)
             output.writeFloat(impedanceBaseline)
             output.writeLong(lastTimestampMs)
             output.writeInt(lastIndex)
-            output.writeInt(innovations.size)
-            innovations.forEach(output::writeFloat)
+            output.writeInt(samplesSinceReset)
         }
         bytes.toByteArray()
     }
 
-    fun restore(snapshot: ByteArray?): Boolean = runCatching {
-        if (snapshot == null || snapshot.isEmpty()) return false
-        DataInputStream(ByteArrayInputStream(snapshot)).use { input ->
-            if (input.readInt() != SNAPSHOT_MAGIC || input.readInt() != SNAPSHOT_VERSION) return false
-            val savedSensitivity = input.readFloat()
-            if (!savedSensitivity.isFinite() || abs(savedSensitivity - decodedSensitivity) > 0.0001f) return false
-            initialized = input.readBoolean()
-            glucose = input.readFloat()
-            velocity = input.readFloat()
-            lastMeasurement = input.readFloat()
-            lastRaw = input.readFloat()
-            lastTemperature = input.readFloat()
-            impedanceBaseline = input.readFloat()
-            lastTimestampMs = input.readLong()
-            lastIndex = input.readInt()
-            val count = input.readInt()
-            if (count !in 0..INNOVATION_WINDOW) return false
-            innovations.clear()
-            repeat(count) { innovations.addLast(input.readFloat()) }
-            if (input.available() != 0 || !isStateValid()) return false
-            true
-        }
-    }.getOrDefault(false).also { restored -> if (!restored) reset() }
+    fun restore(snapshot: ByteArray?): Boolean {
+        val restored = runCatching {
+            if (snapshot == null || snapshot.isEmpty()) return@runCatching false
+            DataInputStream(ByteArrayInputStream(snapshot)).use { input ->
+                if (input.readInt() != SNAPSHOT_MAGIC) return@use false
+                val version = input.readInt()
+                if (version !in LEGACY_SNAPSHOT_VERSION..SNAPSHOT_VERSION) return@use false
+                val savedSensitivity = input.readFloat()
+                if (!savedSensitivity.isFinite() || abs(savedSensitivity - decodedSensitivity) > 0.0001f) {
+                    return@use false
+                }
+                if (version < SNAPSHOT_VERSION) {
+                    reset()
+                    return@use true
+                }
+                initialized = input.readBoolean()
+                level = input.readFloat()
+                trend = input.readFloat()
+                lastMeasurement = input.readFloat()
+                lastRaw = input.readFloat()
+                lastTemperature = input.readFloat()
+                impedanceBaseline = input.readFloat()
+                lastTimestampMs = input.readLong()
+                lastIndex = input.readInt()
+                samplesSinceReset = input.readInt()
+                input.available() == 0 && isStateValid()
+            }
+        }.getOrDefault(false)
+        if (!restored) reset()
+        return restored
+    }
 
     fun applyIntegratedCalibration(
         stockMmol: Float,
@@ -260,21 +264,35 @@ internal class SibionicsAdaptiveAlgorithmContext {
         } / sumWeight).toFloat().coerceIn(-MAX_CALIBRATION_OFFSET, MAX_CALIBRATION_OFFSET)
     }
 
-    private fun signalQuality(temperatureC: Float, impedance: Float): Float {
+    private data class SignalQuality(
+        val overall: Float,
+        val telemetryAnomaly: Boolean,
+    )
+
+    private fun signalQuality(temperatureC: Float, impedance: Float): SignalQuality {
+        val temperatureJump = lastTemperature.isFinite() && temperatureC.isFinite() &&
+            abs(temperatureC - lastTemperature) > TEMPERATURE_JUMP_C
         val temperatureQuality = when {
-            !temperatureC.isFinite() -> 0.35f
+            !temperatureC.isFinite() -> 0.45f
             temperatureC in 28f..40f -> 1f
             temperatureC in 10f..42f -> 0.65f
             else -> 0.25f
-        } * if (lastTemperature.isFinite() && abs(temperatureC - lastTemperature) > 1.2f) 0.65f else 1f
+        } * if (temperatureJump) 0.55f else 1f
 
-        val impedanceQuality = if (impedance.isFinite() && impedance > 0f && impedanceBaseline.isFinite()) {
-            val relativeDelta = abs(impedance - impedanceBaseline) / max(abs(impedanceBaseline), 1f)
-            (1f / (1f + relativeDelta * 5f)).coerceIn(0.2f, 1f)
+        val impedanceDelta = if (impedance.isFinite() && impedance > 0f && impedanceBaseline.isFinite()) {
+            abs(impedance - impedanceBaseline) / max(abs(impedanceBaseline), 1f)
         } else {
-            1f
+            0f
         }
-        return (temperatureQuality * 0.7f + impedanceQuality * 0.3f).coerceIn(0.2f, 1f)
+        val impedanceQuality = (1f / (1f + impedanceDelta * IMPEDANCE_QUALITY_SLOPE))
+            .coerceIn(MIN_SIGNAL_QUALITY, 1f)
+        val anomaly = temperatureJump || temperatureC.isFinite() && temperatureC !in 10f..42f ||
+            impedanceDelta > IMPEDANCE_ANOMALY_FRACTION
+        return SignalQuality(
+            overall = (temperatureQuality * 0.68f + impedanceQuality * 0.32f)
+                .coerceIn(MIN_SIGNAL_QUALITY, 1f),
+            telemetryAnomaly = anomaly,
+        )
     }
 
     private fun updateTelemetry(
@@ -287,7 +305,13 @@ internal class SibionicsAdaptiveAlgorithmContext {
     ) {
         if (impedance.isFinite() && impedance > 0f) {
             impedanceBaseline = if (impedanceBaseline.isFinite()) {
-                impedanceBaseline * 0.96f + impedance * 0.04f
+                val relativeDelta = abs(impedance - impedanceBaseline) / max(abs(impedanceBaseline), 1f)
+                val learningRate = if (relativeDelta > IMPEDANCE_ANOMALY_FRACTION) {
+                    ANOMALOUS_IMPEDANCE_LEARNING_RATE
+                } else {
+                    IMPEDANCE_LEARNING_RATE
+                }
+                impedanceBaseline * (1f - learningRate) + impedance * learningRate
             } else {
                 impedance
             }
@@ -301,9 +325,9 @@ internal class SibionicsAdaptiveAlgorithmContext {
 
     private fun isStateValid(): Boolean {
         if (!initialized) return true
-        return glucose.isFinite() && glucose in 0f..50f &&
-            velocity.isFinite() && abs(velocity) <= MAX_VELOCITY &&
-            lastIndex >= 0
+        return level.isFinite() && level in 0f..50f && trend.isFinite() &&
+            abs(trend) <= MAX_TREND_RATE && lastMeasurement.isFinite() &&
+            lastMeasurement in 0f..50f && lastIndex >= 0 && samplesSinceReset > 0
     }
 
     private fun median(values: FloatArray): Float {
@@ -317,17 +341,30 @@ internal class SibionicsAdaptiveAlgorithmContext {
 
     private companion object {
         private const val SNAPSHOT_MAGIC = 0x5349_4241
-        private const val SNAPSHOT_VERSION = 1
+        private const val LEGACY_SNAPSHOT_VERSION = 1
+        private const val SNAPSHOT_VERSION = 4
         private const val DEFAULT_SENSITIVITY = 1.27f
-        private const val INNOVATION_WINDOW = 7
-        private const val MIN_INNOVATION_SCALE = 0.12f
-        private const val MIN_INNOVATION_LIMIT = 0.55f
-        private const val MAX_INNOVATION = 2.5f
-        private const val MAX_VELOCITY = 0.30f
-        private const val MAX_TREND_LEAD = 0.35f
-        private const val MIN_OUTPUT_DISTANCE = 0.65f
-        private const val MAX_OUTPUT_DISTANCE_FRACTION = 0.16f
-        private const val LOW_QUALITY_SAFETY_EXPANSION = 2f
+        private const val BASE_LEVEL_GAIN = 0.35f
+        private const val MAX_LEVEL_GAIN = 0.92f
+        private const val RAPID_INNOVATION_MMOL = 0.8f
+        private const val TREND_GAIN = 0.02f
+        private const val RAW_TREND_WEIGHT = 0.05f
+        private const val MAX_TREND_RATE = 0.35f
+        private const val MAX_TREND_INNOVATION = 1f
+        private const val MIN_DIRECTION_STEP = 0.05f
+        private const val MIN_RAW_TREND_RATE = 0.02f
+        private const val STARTUP_PASSTHROUGH_SAMPLES = 5
+        private const val MAX_TRACKING_DISTANCE_MMOL = 0.2f
+        private const val LARGE_STEP_MMOL = 1f
+        private const val TURN_STEP_MMOL = 0.15f
+        private const val LOW_EXACT_MMOL = 3.9f
+        private const val LOW_FALL_GUARD_MMOL = 4.5f
+        private const val TEMPERATURE_JUMP_C = 1.2f
+        private const val IMPEDANCE_QUALITY_SLOPE = 5f
+        private const val IMPEDANCE_ANOMALY_FRACTION = 0.75f
+        private const val MIN_SIGNAL_QUALITY = 0.20f
+        private const val IMPEDANCE_LEARNING_RATE = 0.04f
+        private const val ANOMALOUS_IMPEDANCE_LEARNING_RATE = 0.004f
         private const val SINGLE_ANCHOR_CONFIDENCE = 0.82f
         private const val MIN_CALIBRATION_GAIN = 0.78f
         private const val MAX_CALIBRATION_GAIN = 1.22f
