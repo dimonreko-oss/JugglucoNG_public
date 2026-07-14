@@ -156,9 +156,16 @@ public class SensorBluetooth {
     // long unknownfound=0L;
     // String unknownname="";
     private SuperGattCallback getCallback(BluetoothDevice device) {
+        return getCallback(device, null);
+    }
+
+    private SuperGattCallback getCallback(BluetoothDevice device, String advertisedName) {
         try {
             @SuppressLint("MissingPermission")
-            String deviceName = device.getName();
+            String deviceName = advertisedName;
+            if (deviceName == null || deviceName.trim().isEmpty()) {
+                deviceName = device.getName();
+            }
             {
                 if (doLog) {
                     Log.i(LOG_ID, "deviceName=" + deviceName);
@@ -213,8 +220,12 @@ public class SensorBluetooth {
 
     @SuppressLint("MissingPermission")
     private boolean checkdevice(BluetoothDevice device) {
+        return checkdevice(device, null);
+    }
+
+    private boolean checkdevice(BluetoothDevice device, String advertisedName) {
         try {
-            SuperGattCallback cb = getCallback(device);
+            SuperGattCallback cb = getCallback(device, advertisedName);
             if (cb != null) {
                 boolean newdev = true;
                 if (cb.foundtime == 0L) {
@@ -309,7 +320,10 @@ public class SensorBluetooth {
                     SensorBluetooth.this.stopScan(false);
                     return true;
                 }
-                return checkdevice(scanResult.getDevice());
+                String advertisedName = scanResult.getScanRecord() == null
+                        ? null
+                        : scanResult.getScanRecord().getDeviceName();
+                return checkdevice(scanResult.getDevice(), advertisedName);
             }
             // private boolean resultbusy=false;
 
@@ -321,7 +335,10 @@ public class SensorBluetooth {
                 }
                 ;
                 processScanResult(scanResult);
-                SuperGattCallback cb = getCallback(scanResult.getDevice());
+                String advertisedName = scanResult.getScanRecord() == null
+                        ? null
+                        : scanResult.getScanRecord().getDeviceName();
+                SuperGattCallback cb = getCallback(scanResult.getDevice(), advertisedName);
                 if (cb != null) {
                     cb.onScanResult(scanResult);
                 }
