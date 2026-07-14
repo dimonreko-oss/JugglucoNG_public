@@ -490,13 +490,30 @@ object SibionicsRegistry {
 }
 
 object SibionicsManagedSensorIdentityAdapter : tk.glucodata.drivers.ManagedSensorIdentityAdapter {
-    override fun matchesCallbackId(callbackId: String?, sensorId: String): Boolean =
-        SibionicsConstants.matchesId(callbackId, sensorId)
+    private fun hasExplicitPrefix(sensorId: String?): Boolean =
+        sensorId?.trim()?.startsWith(SibionicsConstants.MANAGED_PREFIX, ignoreCase = true) == true
+
+    override fun matchesCallbackId(callbackId: String?, sensorId: String): Boolean {
+        val callbackRecord = SibionicsRegistry.findRecord(Applic.app, callbackId)
+        val sensorRecord = SibionicsRegistry.findRecord(Applic.app, sensorId)
+        if (callbackRecord != null || sensorRecord != null) {
+            val record = callbackRecord ?: sensorRecord ?: return false
+            return record.matchesId(callbackId) && record.matchesId(sensorId)
+        }
+        // Never let the Sibionics suffix rules claim two unrelated vendor ids. Without a
+        // persisted record, only ids that are already explicitly namespaced are ours.
+        return hasExplicitPrefix(callbackId) && hasExplicitPrefix(sensorId) &&
+            SibionicsConstants.matchesId(callbackId, sensorId)
+    }
 
     override fun resolveCanonicalSensorId(sensorId: String?): String? {
         val raw = sensorId?.trim().takeIf { !it.isNullOrBlank() } ?: return null
         SibionicsRegistry.findRecord(Applic.app, raw)?.sensorId?.let { return it }
-        return SibionicsConstants.canonicalSensorId(raw).takeIf { it.isNotBlank() }
+        return if (hasExplicitPrefix(raw)) {
+            SibionicsConstants.canonicalSensorId(raw).takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
     }
 
     override fun resolveStableStorageSensorId(sensorId: String?): String? =
