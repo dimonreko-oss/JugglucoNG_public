@@ -42,6 +42,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Arrays;
 import java.util.UUID;
 import java.util.concurrent.ScheduledFuture;
@@ -892,7 +893,7 @@ public class SensorBluetooth {
         }
     }
 
-    private void removeDevice(String str) {
+    private synchronized void removeDevice(String str) {
         // Use SensorIdentity.matches() instead of strict String.equals so that
         // disconnect/forget works regardless of which form of the serial the UI
         // passes in: provisional ICN- alias, 11-char short tail, 16-char
@@ -1063,7 +1064,7 @@ public class SensorBluetooth {
         Natives.setmaxsensors(gattcallbacks.size());
     }
 
-    void addPersistedManagedCallbacks() {
+    synchronized void addPersistedManagedCallbacks() {
         final Context context = Applic.app;
         if (context == null) {
             return;
@@ -1288,15 +1289,7 @@ public class SensorBluetooth {
         //   Libre: 11 alphanumeric chars
         //   AiDex/LinX: "X-" prefix
         //   Sibionics: serial (variable format)
-        if (name == null || name.trim().isEmpty()) {
-            return false;
-        }
-        for (int i = 0; i < name.length(); i++) {
-            if (Character.isISOControl(name.charAt(i))) {
-                return false;
-            }
-        }
-        return true;
+        return SensorIdentity.isUsableSensorId(name);
     }
 
     private static boolean hasControlCharacter(String name) {
@@ -1334,7 +1327,7 @@ public class SensorBluetooth {
     private static void clearCurrentCorruptSensorName(String name) {
         try {
             final String current = Natives.lastsensorname();
-            if (name.equals(current) || hasControlCharacter(current)) {
+            if (Objects.equals(name, current) || !SensorIdentity.isUsableSensorId(current)) {
                 setCurrentSensorSelection("");
             }
         } catch (Throwable t) {
@@ -1351,7 +1344,16 @@ public class SensorBluetooth {
             if (isValidShortSensorName(name)) {
                 valid.add(name);
             } else {
-                finishCorruptActiveSensorName(name);
+                // Control-character names are known malformed native records and can be
+                // resolved safely by their full value. A placeholder such as "?" has no
+                // identity: never pass it to native lookup/finish, as that could resolve
+                // an unrelated sensor.
+                if (hasControlCharacter(name)) {
+                    finishCorruptActiveSensorName(name);
+                } else {
+                    clearCurrentCorruptSensorName(name);
+                    Log.w(LOG_ID, "Ignored invalid active sensor identity " + name);
+                }
             }
         }
         return valid.toArray(new String[0]);

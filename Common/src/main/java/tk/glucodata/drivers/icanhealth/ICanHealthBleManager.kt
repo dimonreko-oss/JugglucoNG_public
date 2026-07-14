@@ -636,6 +636,10 @@ class ICanHealthBleManager(
         provisionalSensorIdForAdoption = null
     }
 
+    override fun removeManagedPersistence(context: Context) {
+        ICanHealthRegistry.removeSensor(context, SerialNumber)
+    }
+
     override fun hasNativeSensorBacking(): Boolean {
         if (SerialNumber.isBlank() || ICanHealthConstants.isProvisionalSensorId(SerialNumber)) {
             return false

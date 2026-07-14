@@ -326,7 +326,10 @@ class SensorViewModel : ViewModel() {
         }
         return SensorInfo(
             serial = snapshot.serial,
-            displayName = snapshot.displayName,
+            displayName = snapshot.displayName
+                .trim()
+                .takeIf { SensorIdentity.isUsableSensorId(it) }
+                ?: snapshot.serial,
             deviceAddress = snapshot.deviceAddress,
             connectionStatus = detailsConnectionStatus,
             starttime = if (snapshot.startTimeMs > 0) bluediag.datestr(snapshot.startTimeMs) else "",
@@ -400,6 +403,10 @@ class SensorViewModel : ViewModel() {
                     // Edit 56c: Skip finished legacy sensors (not in activeSensors list).
                     // AiDex sensors bypass this check since they're tracked in SharedPreferences.
                     val serial = gatt.SerialNumber ?: ""
+                    if (!SensorIdentity.isUsableSensorId(serial)) {
+                        android.util.Log.e("SensorVM", "Discarding callback with invalid sensor identity")
+                        return@mapNotNull null
+                    }
                     val managedOutsideNative =
                         gatt is ManagedBluetoothSensorDriver && gatt.isManagedOutsideNativeActiveSet()
                     if (!managedOutsideNative && serial.isNotEmpty() && !activeSet.contains(serial)) {
