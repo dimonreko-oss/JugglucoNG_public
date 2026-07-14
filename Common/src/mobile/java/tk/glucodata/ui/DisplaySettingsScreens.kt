@@ -268,6 +268,7 @@ fun NotificationSettingsScreen(
                 icon = null,
                 position = CardPosition.MIDDLE
             )
+            GlucosePaletteCard(position = CardPosition.MIDDLE)
             SettingsSwitchItem(
                 title = stringResource(R.string.notification_show_iob_title),
                 subtitle = stringResource(R.string.notification_show_iob_desc),
