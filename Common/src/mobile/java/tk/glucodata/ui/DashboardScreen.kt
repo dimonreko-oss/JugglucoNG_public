@@ -161,7 +161,7 @@ import tk.glucodata.ui.journal.JournalEntrySheet
 import tk.glucodata.ui.journal.JournalFloatingActionMenu
 import tk.glucodata.ui.journal.JournalInlineChip
 import tk.glucodata.ui.journal.JournalSettingsScreen
-import tk.glucodata.ui.journal.buildActiveInsulinSummary
+import tk.glucodata.data.journal.JournalIobCalculator
 import tk.glucodata.ui.journal.buildJournalChartMarkers
 import tk.glucodata.ui.viewmodel.DashboardViewModel
 import tk.glucodata.ui.theme.displayLargeExpressive
@@ -309,6 +309,10 @@ fun DashboardScreen(
     val visualSmoothingMinutes = if (dataSmoothingExchangeOnly) 0 else chartSmoothingMinutes
     val previewWindowMode by viewModel.previewWindowMode.collectAsState()
     val journalEnabled by viewModel.journalEnabled.collectAsState()
+    val journalEiobDisplayEnabled by viewModel.journalEiobDisplayEnabled.collectAsState()
+    val glucoseRangeColorsDisplayEnabled by viewModel.glucoseValueRangeColorsEnabled.collectAsState()
+    val glucoseArrowForecastEnabled by viewModel.glucoseArrowForecastColorsEnabled.collectAsState()
+    val appChartRangeColorsEnabled by viewModel.glucoseAppChartRangeColorsEnabled.collectAsState()
     val journalDoseCalculatorEnabled by viewModel.journalDoseCalculatorEnabled.collectAsState()
     val journalFoodMacrosEnabled by viewModel.journalFoodMacrosEnabled.collectAsState()
     val journalFoodLibraryEnabled by viewModel.journalFoodLibraryEnabled.collectAsState()
@@ -376,7 +380,7 @@ fun DashboardScreen(
         if (!journalEnabled || scopedJournalEntries.isEmpty()) {
             null
         } else {
-            buildActiveInsulinSummary(scopedJournalEntries, journalPresetsById, journalNow)
+            JournalIobCalculator.buildActiveInsulinSummary(scopedJournalEntries, journalPresetsById, journalNow)
         }
     }
     val predictionSettings = remember(
@@ -1198,6 +1202,8 @@ fun DashboardScreen(
                             targetHigh = targetHigh,
                             veryLowThreshold = veryLowThreshold,
                             veryHighThreshold = veryHighThreshold,
+                            valueRangeColorsEnabled = glucoseRangeColorsDisplayEnabled,
+                            arrowForecastColorsEnabled = glucoseArrowForecastEnabled,
                             onHeroClick = {
                                 val autoVal = latestPoint?.value ?: tk.glucodata.GlucoseValueParser.parseFirstOrZero(currentGlucose)
                                 val rawVal = latestPoint?.rawValue ?: autoVal
@@ -1318,6 +1324,8 @@ fun DashboardScreen(
                                     peerPredictionSeries = peerPredictionSeries,
                                     journalMarkers = journalChartMarkers,
                                     activeInsulinSummary = activeInsulinSummary,
+                                    showEiob = journalEiobDisplayEnabled,
+                                    appChartRangeColors = appChartRangeColorsEnabled,
                                     predictionSeries = predictionSeries,
                                     graphSmoothingMinutes = visualSmoothingMinutes,
                                     collapseSmoothedData = dataSmoothingCollapseChunks,
@@ -1433,6 +1441,8 @@ fun DashboardScreen(
                             targetHigh = targetHigh,
                             veryLowThreshold = veryLowThreshold,
                             veryHighThreshold = veryHighThreshold,
+                            valueRangeColorsEnabled = glucoseRangeColorsDisplayEnabled,
+                            arrowForecastColorsEnabled = glucoseArrowForecastEnabled,
                             onHeroClick = {
                                 val autoVal = latestPoint?.value ?: tk.glucodata.GlucoseValueParser.parseFirstOrZero(currentGlucose)
                                 val rawVal = latestPoint?.rawValue ?: autoVal
@@ -1497,6 +1507,8 @@ fun DashboardScreen(
                                     peerPredictionSeries = peerPredictionSeries,
                                     journalMarkers = journalChartMarkers,
                                     activeInsulinSummary = activeInsulinSummary,
+                                    showEiob = journalEiobDisplayEnabled,
+                                    appChartRangeColors = appChartRangeColorsEnabled,
                                     predictionSeries = predictionSeries,
                                     graphSmoothingMinutes = visualSmoothingMinutes,
                                     collapseSmoothedData = dataSmoothingCollapseChunks,
