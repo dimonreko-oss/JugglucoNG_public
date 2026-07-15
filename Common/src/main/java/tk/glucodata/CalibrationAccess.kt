@@ -41,7 +41,13 @@ object CalibrationAccess {
         runCatching { holder?.getMethod("shouldOverwriteSensorValues") }.getOrNull()
     }
     private val getRevisionMethod by lazy {
-        runCatching { holder?.getMethod("getRevision") }.getOrNull()
+        runCatching {
+            holder?.methods?.firstOrNull { method ->
+                method.name == "getRevision" &&
+                    method.parameterTypes.isEmpty() &&
+                    method.returnType == Long::class.javaPrimitiveType
+            }
+        }.getOrNull()
     }
     private val getIntegratedCalibratedSeriesMethod by lazy {
         runCatching {
