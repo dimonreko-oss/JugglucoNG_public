@@ -343,6 +343,33 @@ object SibionicsRegistry {
         prefs(context).edit().putString(PREF_VARIANT_PREFIX + sensorId, variant.id).apply()
     }
 
+    /**
+     * Persist a variant only after the sensor has accepted that variant's authentication key.
+     * Authentication fallback must never rewrite identity while merely trying candidate keys.
+     */
+    fun confirmAuthenticatedVariant(
+        context: Context,
+        sensorId: String,
+        variant: SibionicsConstants.Variant,
+    ): SensorRecord? {
+        val records = persistedRecords(context).toMutableList()
+        val index = records.indexOfFirst { it.matchesId(sensorId) }
+        val existing = records.getOrNull(index)
+        val updated = existing?.copy(variant = variant)
+        if (index >= 0 && updated != null) records[index] = updated
+
+        val canonicalId = updated?.sensorId ?: SibionicsConstants.canonicalSensorId(sensorId)
+        val editor = prefs(context).edit()
+            .putString(PREF_VARIANT_PREFIX + canonicalId, variant.id)
+        if (updated != null) {
+            editor.putStringSet(PREF_SENSORS, records.map(::encodeRecord).toSet())
+        }
+        editor.apply()
+        ManagedSensorUiSignals.markDeviceListDirty()
+        SensorIdentity.invalidateCaches()
+        return updated
+    }
+
     fun loadShortCode(context: Context, sensorId: String): String =
         prefs(context).getString(PREF_SHORT_CODE_PREFIX + sensorId, null)
             ?.takeIf { it.isNotBlank() }

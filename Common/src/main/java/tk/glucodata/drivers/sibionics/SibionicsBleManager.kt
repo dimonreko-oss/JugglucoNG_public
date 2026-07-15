@@ -113,6 +113,7 @@ class SibionicsBleManager(
     @Volatile private var sensitivity: Float = 1.27f
     @Volatile private var sessionKey: ByteArray? = null
     @Volatile private var keyGroupIndex: Int = 0
+    @Volatile private var authCandidateVariant: SibionicsConstants.Variant? = null
     @Volatile private var pendingResetCommand: Boolean = false
     @Volatile private var discardNotificationsUntilResetDisconnect: Boolean = false
     @Volatile private var loggedDiscardedPostResetNotification: Boolean = false
@@ -146,7 +147,9 @@ class SibionicsBleManager(
     @Volatile private var rebuildAfterNextSourceSample: Boolean = false
 
     @Volatile private var algorithm = SibionicsAlgorithmContext(serial)
-    private val authTimeoutRunnable = Runnable { tryNextKeyGroup("auth timeout") }
+    private val authTimeoutRunnable = Runnable {
+        if (phase == Phase.AUTHENTICATING) tryNextKeyGroup("auth timeout")
+    }
     private val rebuildLaunchRunnable = Runnable {
         val generation = rebuildGeneration
         if (!rebuildExecutor.isShutdown) {
@@ -398,6 +401,8 @@ class SibionicsBleManager(
             BluetoothProfile.STATE_CONNECTED -> {
                 mBluetoothGatt = gatt
                 mActiveBluetoothDevice = gatt.device
+                keyGroupIndex = 0
+                authCandidateVariant = null
                 gatt.device?.address?.let { setDeviceAddress(it) }
                 connectTime = System.currentTimeMillis()
                 phase = Phase.DISCOVERING
@@ -455,6 +460,7 @@ class SibionicsBleManager(
     }
 
     override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+        if (!isCurrentGattCallback(gatt, "descriptor write")) return
         if (descriptor.characteristic?.uuid == SibionicsConstants.CHAR_NOTIFY_FF31) {
             if (pendingResetCommand) {
                 pendingResetCommand = false
@@ -473,6 +479,7 @@ class SibionicsBleManager(
 
     @Suppress("DEPRECATION")
     override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+        if (!isCurrentGattCallback(gatt, "notification")) return
         if (characteristic.uuid == SibionicsConstants.CHAR_NOTIFY_FF31) {
             handleIncoming(characteristic.value ?: ByteArray(0))
         }
@@ -483,9 +490,19 @@ class SibionicsBleManager(
         characteristic: BluetoothGattCharacteristic,
         value: ByteArray,
     ) {
+        if (!isCurrentGattCallback(gatt, "notification")) return
         if (characteristic.uuid == SibionicsConstants.CHAR_NOTIFY_FF31) {
             handleIncoming(value)
         }
+    }
+
+    private fun isCurrentGattCallback(gatt: BluetoothGatt, callback: String): Boolean {
+        val activeGatt = mBluetoothGatt
+        if (gatt === retiredGatt || (activeGatt != null && gatt !== activeGatt)) {
+            Log.d(SibionicsConstants.TAG, "ignore stale GATT $callback serial=$SerialNumber")
+            return false
+        }
+        return true
     }
 
     private fun startProtocolProbe() {
@@ -589,11 +606,6 @@ class SibionicsBleManager(
     }
 
     private fun handleV120Handshake(response: SibionicsProtocol.ResponseType) {
-        protocolMode = SibionicsConstants.ProtocolMode.V120
-        Applic.app?.let {
-            SibionicsRegistry.saveProtocolMode(it, SerialNumber, protocolMode)
-            SibionicsRegistry.saveVariant(it, SerialNumber, variant)
-        }
         when (response) {
             SibionicsProtocol.ResponseType.AUTH_ACCEPTED -> {
                 if (phase != Phase.AUTHENTICATING) {
@@ -601,6 +613,23 @@ class SibionicsBleManager(
                     return
                 }
                 clearV120StepTimeouts()
+                protocolMode = SibionicsConstants.ProtocolMode.V120
+                val authenticatedVariant = authCandidateVariant ?: variant
+                if (variant != authenticatedVariant) {
+                    Log.i(
+                        SibionicsConstants.TAG,
+                        "confirmed variant ${authenticatedVariant.id} (was ${variant.id}) serial=$SerialNumber",
+                    )
+                }
+                variant = authenticatedVariant
+                Applic.app?.let { context ->
+                    SibionicsRegistry.saveProtocolMode(context, SerialNumber, protocolMode)
+                    record = SibionicsRegistry.confirmAuthenticatedVariant(
+                        context,
+                        SerialNumber,
+                        authenticatedVariant,
+                    ) ?: record
+                }
                 synchronized(algorithmLock) {
                     algorithm.configure(shortCode, sensitivity, variant, algorithmSelection)
                 }
@@ -652,6 +681,8 @@ class SibionicsBleManager(
         handler.removeCallbacks(chineseDataTimeoutRunnable)
         handler.removeCallbacks(authTimeoutRunnable)
         protocolMode = SibionicsConstants.ProtocolMode.V120
+        keyGroupIndex = 0
+        authCandidateVariant = null
         Applic.app?.let { SibionicsRegistry.saveProtocolMode(it, SerialNumber, protocolMode) }
         Log.i(SibionicsConstants.TAG, "switching to V120: $reason")
         sendAuthPacket()
@@ -671,7 +702,7 @@ class SibionicsBleManager(
             return
         }
         val selected = groups[keyGroupIndex.coerceIn(0, groups.lastIndex)]
-        variant = selected
+        authCandidateVariant = selected
         sessionKey = SibionicsProtocol.deriveSessionKey(selected)
         val key = sessionKey
         if (key == null) {
@@ -1728,8 +1759,10 @@ class SibionicsBleManager(
     }
 
     private val handshakeTimeoutRunnable = Runnable {
-        setStatus("Handshake timeout")
-        sendAuthPacket()
+        if (phase == Phase.ACTIVATING || phase == Phase.SYNCING_TIME || phase == Phase.REQUESTING_DATA) {
+            setStatus("Handshake timeout")
+            sendAuthPacket()
+        }
     }
 
     private fun scheduleChineseProbeTimeout() {
