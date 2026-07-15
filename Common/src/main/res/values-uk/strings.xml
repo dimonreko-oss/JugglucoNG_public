@@ -165,6 +165,7 @@
  <string name="addsensorenddate">Додайте кінцеву дату датчика до календаря</string>
  <string name="enddatesensor">"Датчик кінцевої дати "</string>
  <string name="open">Відкрити</string>
+ <string name="share">Поділитися</string>
  <string name="withoutsensor">Без датчика</string>
  <string name="wronglibrary">Бібліотека не працює належним чином, спробуйте іншу</string>
  <string name="installedlibrary">Встановлена бібліотека</string>
