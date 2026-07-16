@@ -146,6 +146,8 @@ import tk.glucodata.QRmake
 import tk.glucodata.R
 import tk.glucodata.MainActivity
 import tk.glucodata.UiRefreshBus
+import tk.glucodata.drivers.ManagedSensorCalibrationSource
+import tk.glucodata.drivers.anytime.AnytimeCalibrationPolicy
 import android.widget.Toast
 import tk.glucodata.data.journal.JournalEntry
 import tk.glucodata.data.journal.JournalEntryType
@@ -158,7 +160,6 @@ import tk.glucodata.ui.journal.JournalDoseProfile
 import tk.glucodata.ui.journal.JournalEntrySheet
 import tk.glucodata.ui.journal.JournalInlineChip
 import tk.glucodata.ui.journal.JournalSettingsScreen
-import tk.glucodata.ui.journal.buildActiveInsulinSummary
 import tk.glucodata.ui.journal.buildJournalChartMarkers
 import tk.glucodata.ui.journal.journalTypeColor
 import tk.glucodata.ui.journal.journalTypeSelectedContainerColor
@@ -267,6 +268,101 @@ fun InfoRow(label: String, value: String) {
     }
 }
 
+private fun formatSensorReadingAge(nowMillis: Long, readingMillis: Long): String {
+    val ageSeconds = ((nowMillis - readingMillis).coerceAtLeast(0L) / 1000L)
+    return if (ageSeconds < 60L) {
+        "${ageSeconds}s"
+    } else {
+        "${(ageSeconds / 60L).coerceAtLeast(1L)}m"
+    }
+}
+
+private fun nextSensorReadingAgeDelay(nowMillis: Long, readingMillis: Long): Long {
+    val ageSeconds = ((nowMillis - readingMillis).coerceAtLeast(0L) / 1000L)
+    return if (ageSeconds < 60L) {
+        1_000L
+    } else {
+        ((60L - (ageSeconds % 60L)) * 1_000L).coerceAtLeast(1_000L)
+    }
+}
+
+@Composable
+private fun SensorCurrentValueChip(
+    snapshot: CurrentDisplaySource.Snapshot,
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    var nowMillis by remember(snapshot.timeMillis) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(snapshot.timeMillis) {
+        while (true) {
+            nowMillis = System.currentTimeMillis()
+            delay(nextSensorReadingAgeDelay(nowMillis, snapshot.timeMillis))
+        }
+    }
+    val ageText = remember(nowMillis, snapshot.timeMillis) {
+        formatSensorReadingAge(nowMillis, snapshot.timeMillis)
+    }
+
+    Surface(
+        modifier = modifier.widthIn(max = 220.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 1.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = snapshot.primaryStr,
+                style = MaterialTheme.typography.titleSmall.copy(fontFeatureSettings = "tnum"),
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+            snapshot.secondaryStr?.let { secondary ->
+                Text(
+                    text = " · $secondary",
+                    style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AccessTime,
+                    contentDescription = null,
+                    tint = accentColor.copy(alpha = 0.82f),
+                    modifier = Modifier.size(13.dp)
+                )
+                Spacer(modifier = Modifier.width(3.dp))
+                Text(
+                    text = ageText,
+                    style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+//            Spacer(modifier = Modifier.width(6.dp))
+//            Icon(
+//                imageVector = getTrendIcon(snapshot.rate),
+//                contentDescription = null,
+//                tint = accentColor,
+//                modifier = Modifier.size(16.dp)
+//            )
+        }
+    }
+}
+
 @Composable
 fun SensorCard(
     sensor: tk.glucodata.ui.viewmodel.SensorInfo,
@@ -276,6 +372,8 @@ fun SensorCard(
 ) {
     val context = LocalContext.current
     var showTerminateDialog by remember { mutableStateOf(false) }
+    // AiDex disconnect: break the sensor's pairing by default (frees it for another device).
+    var breakPairingChecked by remember { mutableStateOf(true) }
     var showForgetDialog by remember { mutableStateOf(false) }
     var showResetDialog by remember { mutableStateOf(false) }
     // Edit 79: showClearDialog removed — restart algorithm now in Sibionics Calibration bottom sheet
@@ -292,7 +390,8 @@ fun SensorCard(
 
     // AiDex Maintenance Dialogs
     var showAiDexClearDialog by remember { mutableStateOf(false) }
-    var showAiDexCalibrateDialog by remember { mutableStateOf(false) }
+    var showSensorCalibrateDialog by remember { mutableStateOf(false) }
+    var showAnytimeClearCalibrationDialog by remember { mutableStateOf(false) }
     var showAiDexUnpairDialog by remember { mutableStateOf(false) }
     var showMqRestoreSheet by remember { mutableStateOf(false) }
     var showMqCalibrationSheet by remember { mutableStateOf(false) }
@@ -314,19 +413,47 @@ fun SensorCard(
     // forgetVendor() + removeAiDexFromPrefs() + finishSensor() + sensorEnded() = full cleanup.
     if (showTerminateDialog) {
         if (sensor.isAidex) {
-            // AiDex: full teardown — removes bond, keys, prefs, and sensor entry
+            // AiDex: teardown + optional protocol unpair. The "Break pairing" toggle
+            // defaults ON so disconnect also frees the sensor for another device;
+            // turning it off keeps the pairing/keys for a later reconnect.
             AlertDialog(
-                onDismissRequest = { showTerminateDialog = false },
+                onDismissRequest = { showTerminateDialog = false; breakPairingChecked = true },
                 title = { Text(stringResource(R.string.disconnect_sensor_title)) },
-                text = { Text(stringResource(R.string.disconnect_sensor_aidex_desc)) },
+                text = {
+                    Column {
+                        Text(stringResource(R.string.disconnect_sensor_aidex_desc))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        // Only offer to break pairing when a bond was actually
+                        // established on this device (session key exchanged). In
+                        // broadcast-only mode (e.g. the sensor is still bonded to
+                        // another device) there is nothing here to unpair.
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Switch(
+                                checked = breakPairingChecked && sensor.isVendorPaired,
+                                onCheckedChange = { breakPairingChecked = it },
+                                enabled = sensor.isVendorPaired
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                stringResource(R.string.break_pairing),
+                                color = if (sensor.isVendorPaired) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                }
+                            )
+                        }
+                    }
+                },
                 confirmButton = {
                     TextButton(onClick = {
-                        viewModel.terminateSensor(sensor.serial)
+                        viewModel.disconnectAiDexSensor(sensor.serial, breakPairingChecked && sensor.isVendorPaired)
                         showTerminateDialog = false
+                        breakPairingChecked = true
                     }) { Text(stringResource(R.string.disconnect)) }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showTerminateDialog = false }) {
+                    TextButton(onClick = { showTerminateDialog = false; breakPairingChecked = true }) {
                         Text(stringResource(R.string.cancel))
                     }
                 }
@@ -460,6 +587,24 @@ fun SensorCard(
             },
             dismissButton = {
                 TextButton(onClick = { showResetDialog = false }) { Text(stringResource(R.string.cancel)) }
+            }
+        )
+    }
+
+    if (showAnytimeClearCalibrationDialog) {
+        AlertDialog(
+            onDismissRequest = { showAnytimeClearCalibrationDialog = false },
+            title = { Text(stringResource(R.string.clear_calibrations_title)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.clearManagedSensorCalibration(sensor.serial)
+                    showAnytimeClearCalibrationDialog = false
+                }) { Text(stringResource(R.string.clear)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAnytimeClearCalibrationDialog = false }) {
+                    Text(stringResource(R.string.cancel))
+                }
             }
         )
     }
@@ -912,10 +1057,10 @@ fun SensorCard(
         }
     }
 
-    if (showAiDexCalibrateDialog) {
+    if (showSensorCalibrateDialog) {
         AlertDialog(
             onDismissRequest = {
-                showAiDexCalibrateDialog = false
+                showSensorCalibrateDialog = false
                 calibrationInputText = ""
             },
             title = { Text(stringResource(R.string.calibrate_sensor_title)) },
@@ -924,6 +1069,12 @@ fun SensorCard(
                 val unitLabel = if (isMmol) "mmol/L" else "mg/dL"
                 Column {
                     Text(stringResource(R.string.calibrate_sensor_desc, unitLabel))
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = stringResource(R.string.calibrate_sensor_timing_note),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     Spacer(modifier = Modifier.height(12.dp))
                     androidx.compose.material3.OutlinedTextField(
                         value = calibrationInputText,
@@ -956,14 +1107,18 @@ fun SensorCard(
                 val isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmolApp()
                 val inputValue = calibrationInputText.toFloatOrNull()
                 val glucoseMgDl = inputValue?.let {
-                    (if (isMmol) tk.glucodata.ui.util.GlucoseFormatter.mmolToMg(it) else it).toInt()
+                    (if (isMmol) tk.glucodata.ui.util.GlucoseFormatter.mmolToMg(it) else it).roundToInt()
                 }
                 val isValid = glucoseMgDl != null && glucoseMgDl in 30..500
                 TextButton(
                     onClick = {
                         if (glucoseMgDl != null && isValid) {
-                            viewModel.calibrateAiDexSensor(sensor.serial, glucoseMgDl)
-                            showAiDexCalibrateDialog = false
+                            if (sensor.isAidex) {
+                                viewModel.calibrateAiDexSensor(sensor.serial, glucoseMgDl)
+                            } else {
+                                viewModel.calibrateManagedSensor(sensor.serial, glucoseMgDl)
+                            }
+                            showSensorCalibrateDialog = false
                             calibrationInputText = ""
                         }
                     },
@@ -972,7 +1127,7 @@ fun SensorCard(
             },
             dismissButton = {
                 TextButton(onClick = {
-                    showAiDexCalibrateDialog = false
+                    showSensorCalibrateDialog = false
                     calibrationInputText = ""
                 }) { Text(stringResource(R.string.cancel)) }
             }
@@ -1172,6 +1327,16 @@ fun SensorCard(
     }
 
     val isStreaming = sensor.streaming
+    val refreshRevision by UiRefreshBus.revision.collectAsState(initial = 0L)
+    val currentSnapshot = remember(refreshRevision, sensor.serial, sensor.viewMode) {
+        CurrentDisplaySource.resolveCurrent(
+            maxAgeMillis = Notify.glucosetimeout,
+            preferredSensorId = sensor.serial
+        )?.takeIf { snapshot ->
+            abs(System.currentTimeMillis() - snapshot.timeMillis) <= Notify.glucosetimeout &&
+                snapshot.primaryStr.isNotBlank()
+        }
+    }
     // Visual Feedback: Darken card when disconnected/paused
     val containerColor = if (isStreaming) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
     val contentAlpha = if (isStreaming) 1f else 0.9f
@@ -1261,21 +1426,29 @@ fun SensorCard(
                                 // Toggle Main Sensor Badge
                                 Spacer(modifier = Modifier.width(8.dp))
                                 val isMain = sensor.isActive
+                                val isSelectedForDisplay = sensor.isSelectedForDisplay
 
-                                val badgeColor = if(isMain) sensor.color else sensor.color.copy(alpha=0.6f)
-                                val badgeBg = if(isMain) sensor.color.copy(alpha = 0.15f) else Color.Transparent
-                                val badgeBorder = if(isMain) null else androidx.compose.foundation.BorderStroke(1.dp, sensor.color.copy(alpha=0.3f))
+                                val badgeColor = if (isSelectedForDisplay) sensor.color else sensor.color.copy(alpha = 0.6f)
+                                val badgeBg = when {
+                                    isMain -> sensor.color.copy(alpha = 0.16f)
+                                    isSelectedForDisplay -> sensor.color.copy(alpha = 0.10f)
+                                    else -> Color.Transparent
+                                }
+                                val badgeBorder = if (isSelectedForDisplay) {
+                                    null
+                                } else {
+                                    androidx.compose.foundation.BorderStroke(1.dp, sensor.color.copy(alpha = 0.3f))
+                                }
 
                                 if (sensorCount > 1) {
+                                    val selectedDescription = stringResource(R.string.sensor_display_selected)
+                                    val selectDescription = stringResource(R.string.sensor_display_select)
                                     // Multi-sensor: interactive badge with Surface background
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Box(
                                         modifier = Modifier
                                             .clip(androidx.compose.foundation.shape.CircleShape)
-                                            .then(
-                                                if (!isMain) Modifier.clickable { viewModel.setMain(sensor.serial) }
-                                                else Modifier
-                                            )
+                                            .clickable { viewModel.toggleDisplaySelection(sensor.serial) }
                                             .defaultMinSize(minWidth = 26.dp, minHeight = 26.dp),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -1285,8 +1458,8 @@ fun SensorCard(
                                             border = badgeBorder
                                         ) {
                                             Icon(
-                                                imageVector = if (isMain) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
-                                                contentDescription = if (isMain) "Active" else "Set Main",
+                                                imageVector = if (isSelectedForDisplay) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                                                contentDescription = if (isSelectedForDisplay) selectedDescription else selectDescription,
                                                 tint = badgeColor,
                                                 modifier = Modifier
                                                     .padding(horizontal = 8.dp, vertical = 8.dp)
@@ -1315,20 +1488,34 @@ fun SensorCard(
                             }
                             // Feature: Detailed Sensor Status
                             Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                val sensorStatusText = when {
+                                    sensor.detailedStatus.isNotEmpty() -> sensor.detailedStatus
+                                    sensor.connectionStatus.isNotEmpty() -> sensor.connectionStatus
+                                    else -> null
+                                }
 
-                    if (sensor.detailedStatus.isNotEmpty()) {
-                        Text(
-                            text = sensor.detailedStatus,
-                            style = MaterialTheme.typography.titleSmall, // Bigger than labelMedium
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    } else if (sensor.connectionStatus.isNotEmpty()) {
-                         Text(
-                            text = sensor.connectionStatus,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                                currentSnapshot?.let { snapshot ->
+                                    SensorCurrentValueChip(
+                                        snapshot = snapshot,
+                                        accentColor = sensor.color
+                                    )
+                                }
+                                sensorStatusText?.let { status ->
+                                    Text(
+                                        text = status,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                }
+                            }
                         }
 
                         // Logic: Show Pause if running, Play if stopped (to resume)
@@ -1476,6 +1663,9 @@ fun SensorCard(
 
                     if (sensor.vendorModel.isNotEmpty()) {
                         DataRow(stringResource(R.string.model), sensor.vendorModel)
+                    }
+                    if (sensor.sensorDetailTelemetry.isNotBlank()) {
+                        DataRow(stringResource(R.string.anytime_sensor_telemetry), sensor.sensorDetailTelemetry)
                     }
                     if (sensor.vendorFirmware.isNotEmpty()) {
                         val firmwareText = if (sensor.vendorFirmware.startsWith("v", ignoreCase = true)) {
@@ -1631,7 +1821,7 @@ fun SensorCard(
                 // Full-width Calibrate button — disabled when vendor BLE is not connected
                 val canCalibrate = sensor.isVendorConnected
                 FilledTonalButton(
-                    onClick = { showAiDexCalibrateDialog = true },
+                    onClick = { showSensorCalibrateDialog = true },
                     enabled = canCalibrate,
                     modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                     shape = RoundedCornerShape(28.dp),
@@ -1745,7 +1935,11 @@ fun SensorCard(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = if (calExpanded) "Show less" else "Show all $calCount",
+                                        text = if (calExpanded) {
+                                            stringResource(R.string.show_less)
+                                        } else {
+                                            stringResource(R.string.show_all_count, calCount)
+                                        },
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.primary
                                     )
@@ -2005,6 +2199,202 @@ fun SensorCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(stringResource(R.string.mq_manual_calibration_title))
+                }
+            }
+
+            if (sensor.isAnytime && sensor.supportsManualCalibration) {
+                val warmupComplete = AnytimeCalibrationPolicy.canAcceptManualCalibration(sensor.sensorAgeHours)
+                val canCalibrate = sensor.isVendorConnected && warmupComplete
+                FilledTonalButton(
+                    onClick = { showSensorCalibrateDialog = true },
+                    enabled = canCalibrate,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    shape = RoundedCornerShape(28.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        disabledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Bloodtype,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = when {
+                            !sensor.isVendorConnected -> stringResource(R.string.calibrate_connect_first)
+                            !warmupComplete -> stringResource(R.string.calibrate_after_24h)
+                            else -> stringResource(R.string.calibrate_action)
+                        },
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                }
+
+                if (sensor.vendorCalibrations.any { it.source == ManagedSensorCalibrationSource.ANYTIME }) {
+                    val isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmolApp()
+                    val calDateFormat = java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.getDefault())
+                    val anytimeCals = sensor.vendorCalibrations
+                        .filter { it.source == ManagedSensorCalibrationSource.ANYTIME }
+                    val calCount = anytimeCals.size
+                    val collapsible = calCount > 3
+                    var calExpanded by rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+                    val visibleCals = if (collapsible && !calExpanded) {
+                        anytimeCals.take(3)
+                    } else {
+                        anytimeCals
+                    }
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        tonalElevation = 1.dp
+                    ) {
+                        Column(modifier = Modifier.animateContentSize()) {
+                            Text(
+                                text = stringResource(R.string.previous_calibrations),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                            visibleCals.forEachIndexed { idx, cal ->
+                                if (idx > 0) {
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(horizontal = 12.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                    )
+                                }
+                                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        val displayGlucose = tk.glucodata.ui.util.GlucoseFormatter.formatFromMgDl(
+                                            cal.referenceGlucoseMgDl.toFloat(),
+                                            isMmol
+                                        )
+                                        Text(
+                                            text = displayGlucose,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        val timeText = if (cal.timestampMs > 0) {
+                                            calDateFormat.format(java.util.Date(cal.timestampMs))
+                                        } else {
+                                            stringResource(R.string.anytime_calibration_target_reading, cal.index)
+                                        }
+                                        Text(
+                                            text = timeText,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Row(
+                                        modifier = Modifier.padding(top = 2.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Text(
+                                            text = stringResource(R.string.anytime_calibration_target_reading, cal.index),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = if (cal.appliedGlucoseId > 0) {
+                                                stringResource(R.string.anytime_calibration_applied_reading, cal.appliedGlucoseId)
+                                            } else {
+                                                stringResource(R.string.anytime_calibration_pending_record)
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    if (cal.outputGlucoseMgDl > 0) {
+                                        Text(
+                                            text = stringResource(
+                                                R.string.anytime_calibration_algorithm_output,
+                                                tk.glucodata.ui.util.GlucoseFormatter.formatFromMgDl(
+                                                    cal.outputGlucoseMgDl.toFloat(),
+                                                    isMmol
+                                                )
+                                            ),
+                                            modifier = Modifier.padding(top = 2.dp),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                            if (collapsible) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(horizontal = 12.dp),
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                )
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
+                                        .clickable { calExpanded = !calExpanded }
+                                        .heightIn(min = 48.dp),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = if (calExpanded) {
+                                            stringResource(R.string.show_less)
+                                        } else {
+                                            stringResource(R.string.show_all_count, calCount)
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(
+                                        imageVector = if (calExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (sensor.supportsClearCalibration) {
+                    FilledTonalButton(
+                        onClick = { showAnytimeClearCalibrationDialog = true },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                        shape = RoundedCornerShape(28.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = stringResource(R.string.clear_calibrations_title),
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
 

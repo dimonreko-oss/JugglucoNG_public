@@ -4,8 +4,10 @@ import android.content.Context
 
 data class ManagedSensorCurrentSnapshot(
     val timeMillis: Long,
+    /** Glucose in the user's current display unit (mmol/L or mg/dL). */
     val glucoseValue: Float,
     val rawGlucoseValue: Float = Float.NaN,
+    val calibratedGlucoseValue: Float = Float.NaN,
     val rate: Float = Float.NaN,
     val sensorGen: Int = 0,
 )
@@ -18,7 +20,17 @@ data class ManagedSensorCalibrationRecord(
     val cf: Float,
     val offset: Float,
     val isValid: Boolean,
+    val source: ManagedSensorCalibrationSource = ManagedSensorCalibrationSource.GENERIC,
+    val appliedGlucoseId: Int = 0,
+    val appliedAtMs: Long = 0L,
+    val outputGlucoseMgDl: Int = 0,
 )
+
+enum class ManagedSensorCalibrationSource {
+    GENERIC,
+    AIDEX,
+    ANYTIME,
+}
 
 enum class ManagedSensorUiFamily {
     GENERIC,
@@ -26,6 +38,7 @@ enum class ManagedSensorUiFamily {
     AIDEX,
     ICAN,
     ANYTIME,
+    OTTAI,
 }
 
 data class ManagedSensorUiSnapshot(
@@ -48,6 +61,8 @@ data class ManagedSensorUiSnapshot(
     val supportsDisplayModes: Boolean = false,
     val supportsManualCalibration: Boolean = false,
     val supportsHardwareReset: Boolean = false,
+    val supportsClearCalibration: Boolean = false,
+    val sensorDetailTelemetry: String = "",
     val isVendorPaired: Boolean = false,
     val vendorCalibrations: List<ManagedSensorCalibrationRecord> = emptyList(),
     val isVendorConnected: Boolean = false,

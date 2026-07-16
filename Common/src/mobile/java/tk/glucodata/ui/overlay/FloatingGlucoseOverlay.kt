@@ -3,14 +3,18 @@ package tk.glucodata.ui.overlay
 import android.view.MotionEvent
 import android.content.Intent
 import android.graphics.Typeface // Added for Google Sans
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ripple
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -126,14 +130,38 @@ fun FloatingGlucoseOverlay(
         70.dp
     }
     // Styles
+    val isDarkTheme = isSystemInDarkTheme()
     val finalBgColor = if (isTransparent) Color.Transparent else Color.Black.copy(alpha = opacity)
     val finalShape = RoundedCornerShape(cornerRadius.dp)
-    val finalTextColor = Color.White
-    val textOutlineColor = Color.Black.copy(alpha = if (isTransparent) 0.34f else 0.28f)
+    val finalTextColor = if (isTransparent && !isDarkTheme) {
+        Color(0xFF27231F)
+    } else {
+        Color.White
+    }
+    val textOutlineColor = when {
+        isTransparent && !isDarkTheme -> Color.White.copy(alpha = 0.88f)
+        isTransparent -> Color.Black.copy(alpha = 0.58f)
+        else -> Color.Black.copy(alpha = 0.28f)
+    }
     val textShadow = Shadow(
-        color = Color.Black.copy(alpha = if (isTransparent) 0.52f else 0.42f),
-        offset = Offset(0f, 1.5f),
-        blurRadius = 5f
+        color = when {
+            isTransparent && !isDarkTheme -> Color.White.copy(alpha = 1.0f)
+            isTransparent -> Color.Black.copy(alpha = 0.62f)
+            else -> Color.Black.copy(alpha = 0.42f)
+        },
+        offset = Offset(0f, if (isTransparent && !isDarkTheme) 0f else if (isTransparent) 1.2f else 1.5f),
+        blurRadius = if (isTransparent && !isDarkTheme) 7f else if (isTransparent) 4.5f else 5f
+    )
+    val arrowOutlineColor = if (isTransparent && useSubtleOutline) textOutlineColor else null
+    val arrowShadowColor = if (isTransparent && !useSubtleOutline) textShadow.color else null
+    val overlayInteractionSource = remember { MutableInteractionSource() }
+    val overlayIndication = ripple(
+        bounded = true,
+        color = if (isTransparent) {
+            Color.White.copy(alpha = 0.24f)
+        } else {
+            Color.White.copy(alpha = 0.16f)
+        }
     )
     var pendingDragX by remember { mutableFloatStateOf(0f) }
     var pendingDragY by remember { mutableFloatStateOf(0f) }
@@ -303,7 +331,9 @@ fun FloatingGlucoseOverlay(
             TrendIndicator(
                 trendResult = trendResult,
                 modifier = Modifier.size(if (isDynamicIsland && isVerticalIsland) sideIslandArrowSize else arrowSize),
-                color = finalTextColor
+                color = finalTextColor,
+                outlineColor = arrowOutlineColor,
+                shadowColor = arrowShadowColor
             )
         } else {
             Spacer(Modifier.size(1.dp))
@@ -321,7 +351,11 @@ fun FloatingGlucoseOverlay(
             modifier = Modifier
                 .wrapContentSize()
                 .then(dragModifier)
-                .clickable { launchIntent?.let { context.startActivity(it) } }
+                .clip(finalShape)
+                .clickable(
+                    interactionSource = overlayInteractionSource,
+                    indication = overlayIndication
+                ) { launchIntent?.let { context.startActivity(it) } }
         ) {
             if (isVerticalIsland) {
                 AsymmetricCenteringColumn(
@@ -397,7 +431,11 @@ fun FloatingGlucoseOverlay(
             modifier = Modifier
                 .wrapContentSize()
                 .then(dragModifier)
-                .clickable { launchIntent?.let { context.startActivity(it) } }
+                .clip(finalShape)
+                .clickable(
+                    interactionSource = overlayInteractionSource,
+                    indication = overlayIndication
+                ) { launchIntent?.let { context.startActivity(it) } }
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = pillHorizontalPadding, vertical = pillVerticalPadding),
@@ -406,7 +444,13 @@ fun FloatingGlucoseOverlay(
             ) {
                 valueContent()
                 if (showArrow && glucosePoint != null) {
-                    TrendIndicator(trendResult, Modifier.size(arrowSize), finalTextColor)
+                    TrendIndicator(
+                        trendResult,
+                        Modifier.size(arrowSize),
+                        finalTextColor,
+                        outlineColor = arrowOutlineColor,
+                        shadowColor = arrowShadowColor
+                    )
                 }
             }
         }

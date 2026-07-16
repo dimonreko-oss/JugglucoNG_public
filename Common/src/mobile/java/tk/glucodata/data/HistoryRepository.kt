@@ -158,6 +158,16 @@ class HistoryRepository(context: Context = Applic.app) {
                     .toLongArray()
             }
         }
+
+        @JvmStatic
+        fun deleteReadingsForSensorAfterBlocking(sensorSerial: String, timestampExclusive: Long): Int {
+            val resolvedSerial = sensorSerial.takeIf { it.isNotBlank() }
+                ?: return 0
+            if (timestampExclusive <= 0L) return 0
+            return kotlinx.coroutines.runBlocking {
+                HistoryRepository().deleteReadingsForSensorAfter(resolvedSerial, timestampExclusive)
+            }
+        }
         
         /**
          * Blocking version for Notify.java that returns tk.glucodata.GlucosePoint.
@@ -385,7 +395,19 @@ class HistoryRepository(context: Context = Applic.app) {
                     Log.d(TAG, "Skipped tombstoned reading for $serial at $timestamp")
                     return@withContext
                 }
-                dao.insert(reading)
+                database.withTransaction {
+                    deleteSensorRowsInBucketRanges(
+                        sensorSerial = serial,
+                        bucketDurationMs = SENSOR_MINUTE_BUCKET_MS,
+                        bucketRanges = listOf(
+                            HistoryBucketReplacement.BucketRange(
+                                firstBucketId = timestamp / SENSOR_MINUTE_BUCKET_MS,
+                                lastBucketId = timestamp / SENSOR_MINUTE_BUCKET_MS
+                            )
+                        )
+                    )
+                    dao.insert(reading)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error storing reading", e)
             }
@@ -471,28 +493,121 @@ class HistoryRepository(context: Context = Applic.app) {
                     Log.d(TAG, "Skipped bucket replace for $sensorSerial — all readings were tombstoned")
                     return@withContext false
                 }
-                val plan = HistoryBucketReplacement.plan(
+                val collapsedReadings = HistoryBucketReplacement.collapseReadings(
                     readings = filteredReadings,
+                    bucketDurationMs = bucketDurationMs,
+                )
+                if (collapsedReadings.isEmpty()) return@withContext false
+                val plan = HistoryBucketReplacement.planForCollapsedReadings(
+                    collapsedReadings = collapsedReadings,
                     bucketDurationMs = bucketDurationMs,
                 ) ?: return@withContext false
                 database.withTransaction {
-                    dao.deleteConflictingSensorRowsForBuckets(
+                    deleteSensorRowsInBucketRanges(
                         sensorSerial = sensorSerial,
                         bucketDurationMs = bucketDurationMs,
-                        bucketIds = plan.bucketIds,
-                        protectedTimestamps = plan.protectedTimestamps
+                        bucketRanges = plan.bucketRanges
                     )
-                    dao.insertAll(filteredReadings)
+                    dao.insertAll(collapsedReadings)
                 }
                 BatteryTrace.bump(
                     "room.history.replace_bucket_batch",
                     logEvery = 20L,
-                    detail = "serial=$sensorSerial size=${filteredReadings.size} bucket=${bucketDurationMs}"
+                    detail = "serial=$sensorSerial size=${collapsedReadings.size} bucket=${bucketDurationMs}"
                 )
                 true
             } catch (e: Exception) {
                 Log.e(TAG, "Error replacing bucket history batch for $sensorSerial", e)
                 false
+            }
+        }
+    }
+
+    private suspend fun deleteSensorRowsInBucketRanges(
+        sensorSerial: String,
+        bucketDurationMs: Long,
+        bucketRanges: List<HistoryBucketReplacement.BucketRange>
+    ): Int {
+        if (sensorSerial.isBlank() || bucketDurationMs <= 0L || bucketRanges.isEmpty()) return 0
+
+        var deleted = 0
+        for (range in bucketRanges) {
+            if (range.firstBucketId > range.lastBucketId) continue
+            val startTimeInclusive = range.firstBucketId * bucketDurationMs
+            val endTimeExclusive = (range.lastBucketId + 1L) * bucketDurationMs
+            if (endTimeExclusive <= startTimeInclusive) continue
+
+            deleted += dao.deleteSensorRowsInTimeRange(
+                sensorSerial = sensorSerial,
+                startTimeInclusive = startTimeInclusive,
+                endTimeExclusive = endTimeExclusive
+            )
+        }
+        return deleted
+    }
+
+    /**
+     * Physically fold imported readings into a real sensor once that sensor's
+     * native history has been backfilled. Scoped to the sensor's coverage
+     * window so unrelated imported data (different time period) is left alone.
+     *
+     * Within the window:
+     *  - imported readings whose minute bucket the sensor already covers are
+     *    dropped (the live sensor is authoritative on overlap);
+     *  - imported readings that fill gaps are retagged to the sensor serial so
+     *    they become part of that sensor's history.
+     *
+     * This mirrors the display-time merge in [HistoryDisplayMerge] but makes it
+     * durable in the database.
+     */
+    suspend fun reconcileImportedIntoSensor(serial: String) {
+        withContext(Dispatchers.IO) {
+            try {
+                val nativeSerials = resolveQuerySensorSerials(serial)
+                if (nativeSerials.isEmpty()) return@withContext
+                val importedSerials = IMPORTED_HISTORY_SENSOR_SERIALS.filterNot { it in nativeSerials }
+                if (importedSerials.isEmpty()) return@withContext
+
+                // Cheap guard: nothing to reconcile if there are no imported rows at all.
+                if (dao.getCountForSensors(importedSerials) == 0) return@withContext
+
+                val oldest = dao.getOldestTimestampForSensors(nativeSerials) ?: return@withContext
+                val latest = dao.getLatestReadingForSensors(nativeSerials)?.timestamp ?: return@withContext
+                if (oldest <= 0L || latest < oldest) return@withContext
+
+                val importedInWindow = dao.getReadingsSinceForSensors(importedSerials, oldest)
+                    .filter { it.timestamp <= latest }
+                if (importedInWindow.isEmpty()) return@withContext
+
+                val nativeBuckets = HashSet<Long>()
+                dao.getTimestampsForSensors(nativeSerials, oldest, latest)
+                    .forEach { nativeBuckets.add(it / SENSOR_MINUTE_BUCKET_MS) }
+
+                val roomSerial = SensorIdentity.resolveRoomStorageSensorId(serial) ?: serial
+                val gapFillers = importedInWindow
+                    .filter { (it.timestamp / SENSOR_MINUTE_BUCKET_MS) !in nativeBuckets }
+                    .map { it.copy(id = 0L, sensorSerial = roomSerial) }
+                val retagReadings = filterDeletedReadings(gapFillers)
+
+                database.withTransaction {
+                    for (importedSerial in importedSerials) {
+                        dao.deleteSensorRowsInTimeRange(
+                            sensorSerial = importedSerial,
+                            startTimeInclusive = oldest,
+                            endTimeExclusive = latest + 1L
+                        )
+                    }
+                    if (retagReadings.isNotEmpty()) {
+                        dao.insertAll(retagReadings)
+                    }
+                }
+                Log.d(
+                    TAG,
+                    "Reconciled imported history into $roomSerial: retagged ${retagReadings.size}, " +
+                        "dropped ${importedInWindow.size - gapFillers.size}, window=$oldest..$latest"
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Error reconciling imported history into $serial", e)
             }
         }
     }
@@ -552,6 +667,26 @@ class HistoryRepository(context: Context = Applic.app) {
         }
         return dao.getHistoryFlowForSensors(serials, startTime).map { readings ->
             mapReadings(mergeQueryReadings(readings, serial))
+        }.flowOn(Dispatchers.IO)
+    }
+
+    /**
+     * Display/history UI query for a bounded set of live sensors. This keeps
+     * peer dashboard charts off the all-sensor Room stream while preserving
+     * each sensor's rows for per-minute grouping and tooltips.
+     */
+    fun getHistoryFlowForDisplaySensors(
+        sensorIds: List<String>,
+        startTime: Long = 0L
+    ): kotlinx.coroutines.flow.Flow<List<GlucosePoint>> {
+        val serials = sensorIds
+            .flatMap { resolveDisplayQuerySensorSerials(it) }
+            .distinct()
+        if (serials.isEmpty()) {
+            return kotlinx.coroutines.flow.flowOf(emptyList())
+        }
+        return dao.getHistoryFlowForSensors(serials, startTime).map { readings ->
+            mapReadings(readings)
         }.flowOn(Dispatchers.IO)
     }
 
@@ -964,6 +1099,10 @@ class HistoryRepository(context: Context = Applic.app) {
                     }
                     backfillFinished.signalAll()
                 }
+                if (success) {
+                    // Fold any overlapping imported history into this real sensor.
+                    reconcileImportedIntoSensor(serial)
+                }
             }
         }
     }
@@ -1030,8 +1169,17 @@ class HistoryRepository(context: Context = Applic.app) {
         if (readings.isEmpty()) return 0
         val filteredReadings = filterDeletedReadings(readings)
         if (filteredReadings.isEmpty()) return 0
-        dao.insertAll(filteredReadings)
-        return filteredReadings.size
+        val roomSerial = filteredReadings.firstOrNull()?.sensorSerial
+            ?: SensorIdentity.resolveRoomStorageSensorId(serial)
+            ?: serial
+        val collapsedCount = HistoryBucketReplacement
+            .collapseReadings(filteredReadings, SENSOR_MINUTE_BUCKET_MS)
+            .size
+        return if (storeReadingsReplacingSensorBuckets(roomSerial, filteredReadings, SENSOR_MINUTE_BUCKET_MS)) {
+            collapsedCount
+        } else {
+            0
+        }
     }
 
     private suspend fun resolveNativeBackfillStartSec(serial: String, requestedStartTimeMs: Long): Long {
@@ -1105,6 +1253,26 @@ class HistoryRepository(context: Context = Applic.app) {
                 removedCount
             } catch (e: Exception) {
                 Log.e(TAG, "Error deleting reading at $timestamp for $sensorSerial", e)
+                0
+            }
+        }
+    }
+
+    suspend fun deleteReadingsForSensorAfter(sensorSerial: String, timestampExclusive: Long): Int {
+        if (timestampExclusive <= 0L || sensorSerial.isBlank()) return 0
+        val serials = resolveQuerySensorSerials(sensorSerial).ifEmpty { listOf(sensorSerial) }
+        if (serials.isEmpty()) return 0
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val removedCount = dao.deleteReadingsForSensorsAfter(serials, timestampExclusive)
+                if (removedCount > 0) {
+                    UiRefreshBus.requestDataRefresh()
+                    Log.w(TAG, "Deleted $removedCount future readings for serials=$serials after $timestampExclusive")
+                }
+                removedCount
+            } catch (e: Exception) {
+                Log.e(TAG, "Error deleting future readings for $sensorSerial after $timestampExclusive", e)
                 0
             }
         }

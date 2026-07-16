@@ -64,6 +64,9 @@ object AnytimeConstants {
     /** Pull next glucose record by id. Body: {0x08, idLo, idHi}. */
     const val TX_PULL_GLUCOSE: Byte = 0x08
 
+    /** Pull a counted raw-history series. Body: {0x22, idLo, idHi, count, sum}. */
+    const val TX_PULL_GLUCOSE_SERIES: Byte = 0x22
+
     /** Upload fingerstick reference BG. Body: {0x09, mmolInt, mmolFrac/10}. */
     const val TX_INPUT_BG_MG: Byte = 0x09
 
@@ -87,6 +90,24 @@ object AnytimeConstants {
 
     /** Formal version request (CT3_x / CT4 — selects voltage path). */
     const val TX_TRANSMITTER_FORMAL: Byte = 0x20
+
+    /** CT5 identity challenge. Body: {0x30, randomB[4], convolve(randomB, randomA)[4], sum}. */
+    const val TX_CT5_SET_ID: Byte = 0x30
+
+    /** CT5 reconnect identity check. Body: {0x31, randomB[4], sum}. */
+    const val TX_CT5_CHECK_ID: Byte = 0x31
+
+    /** CT5 push ACK. Body: {0x35, 0x55, 0xAA, sum}. */
+    const val TX_CT5_PUSH_ACK: Byte = 0x35
+
+    /** CT5 series-history pull. Body: {0x37, idLo, idHi, count, sum}. */
+    const val TX_CT5_PULL_SERIES: Byte = 0x37
+
+    /** CT5 encrypted K/R and temporary ID setup. */
+    const val TX_CT5_SET_PARAMETERS: Byte = 0x38
+
+    /** CT5 encrypted QR/KR query. Body: {0x3F, 0x55, 0xAA, sum}. */
+    const val TX_CT5_QUERY_SSN: Byte = 0x3F
 
     // ---- Sensor → phone notification opcodes (RX) ----
 
@@ -132,13 +153,34 @@ object AnytimeConstants {
     /** Formal version response (≥6 bytes — version string starts at byte 1). */
     const val RX_TRANSMITTER_FORMAL: Byte = 0x20
 
-    /** Series response (CT5 push). */
+    /** Counted CT2.5/CT3A/CT4 raw-history series response. */
     const val RX_SERIES: Byte = 0x22
+
+    /** Legacy unsolicited CT2.5/CT3A/CT4 raw-history dump, same payload layout as RX_SERIES. */
+    const val RX_LEGACY_RAW_DUMP: Byte = 0x0D
+
+    /** CT5 reconnect identity check response. */
+    const val RX_CT5_CHECK_ID: Byte = 0x31
+
+    /** CT5 transmitter-computed live push. */
+    const val RX_CT5_PUSH_GLUCOSE: Byte = 0x35
+
+    /** CT5 encrypted history series response. */
+    const val RX_CT5_SERIES: Byte = 0x37
+
+    /** CT5 encrypted K/R setup response. */
+    const val RX_CT5_SET_PARAMETERS: Byte = 0x38
+
+    /** CT5 encrypted QR/KR response. */
+    const val RX_CT5_QUERY_SSN: Byte = 0x3F
 
     // ---- 9-byte / 11-byte raw-current records (RX_PUSH_GLUCOSE / RX_PULL_GLUCOSE) ----
 
     const val RAW_RECORD_SIZE = 9
     const val WIDE_RAW_RECORD_SIZE = 11
+    const val WIDE_RAW_SERIES_CHUNK_SIZE = 6
+    const val CT5_RAW_CHUNK_SIZE = 11
+    const val CT5_VOLTAGE_CHUNK_SIZE = 15
     const val RAW_OFFSET_OPCODE = 0
     const val RAW_OFFSET_ID_LO = 1
     const val RAW_OFFSET_ID_HI = 2
@@ -185,6 +227,7 @@ object AnytimeConstants {
     const val BATTERY_LOW_VOLTS_CT3 = 4.05f
     const val BATTERY_LOW_VOLTS_CT3_A = 3.9f
     const val BATTERY_LOW_VOLTS_CT2_5 = 2.97f
+    const val BATTERY_LOW_VOLTS_CT4 = 2.97f
 
     /** Battery rated voltage (full transmitter). */
     const val BATTERY_FULL_VOLTS = 4.2f
@@ -208,11 +251,11 @@ object AnytimeConstants {
 
     // ---- Algorithm fallback (linear K/R when libalgorithm-jni.so unavailable) ----
 
-    /** Final output clamp: mg/dL × 10 (matches official UI 17–400 mg/dL). */
-    const val ALGO_MGDL_MIN_TIMES10 = 17
+    /** Final output clamp: mg/dL × 10. Native output has been observed below 3.0 mmol/L. */
+    const val ALGO_MGDL_MIN_TIMES10 = 170
     const val ALGO_MGDL_MAX_TIMES10 = 4000
 
-    /** Mmol/L floor — official app's lower display bound. */
+    /** Linear fallback Auto floor only; Raw remains unclamped and native values bypass this. */
     const val ALGO_MMOL_FLOOR = 2.2
 
     // ---- Device family enum (`EDevice` equivalent) ----
@@ -306,7 +349,7 @@ object AnytimeConstants {
         FamilyEntry("SN87", Family.CT4, 10, 7220),
         FamilyEntry("SN88", Family.CT4, 10, 7220),
         FamilyEntry("SN90", Family.CT4, 10, 4820),
-        // ---- CT5 (no separate transmitter — placeholder) ----
+        // ---- CT5 (integrated transmitter/sensor, encrypted identity/data layer) ----
         FamilyEntry("Anytime", Family.CT5, 11, 7695),
     )
 
@@ -374,10 +417,18 @@ object AnytimeConstants {
 
     @JvmStatic
     fun matchesCanonicalOrKnownNativeAlias(a: String?, b: String?): Boolean {
-        val ca = canonicalSensorId(a)
-        val cb = canonicalSensorId(b)
+        val ca = canonicalSensorId(a).uppercase(Locale.US)
+        val cb = canonicalSensorId(b).uppercase(Locale.US)
         if (ca.isEmpty() || cb.isEmpty()) return false
-        return ca.equals(cb, ignoreCase = true)
+        if (ca == cb) return true
+        if (!ca.all { it in '0'..'9' || it in 'A'..'F' } ||
+            !cb.all { it in '0'..'9' || it in 'A'..'F' }
+        ) {
+            return false
+        }
+        val shorter = if (ca.length < cb.length) ca else cb
+        val longer = if (ca.length < cb.length) cb else ca
+        return shorter.length >= 7 && longer.endsWith(shorter)
     }
 
     @JvmStatic
@@ -407,5 +458,13 @@ object AnytimeConstants {
     const val PREF_DEVICE_NAME_PREFIX = "anytime_device_name_"
     const val PREF_TRANSMITTER_VERSION_PREFIX = "anytime_tx_version_"
     const val PREF_BOUND_PREFIX = "anytime_bound_"
+    const val PREF_REF_BG_MGDL_TIMES10_PREFIX = "anytime_ref_bg_x10_"
+    const val PREF_REF_BG_GLUCOSE_ID_PREFIX = "anytime_ref_bg_id_"
+    const val PREF_REF_BG_APPLIED_GLUCOSE_ID_PREFIX = "anytime_ref_bg_applied_id_"
+    const val PREF_REF_BG_HISTORY_PREFIX = "anytime_ref_bg_history_"
     const val PREF_RAW_HISTORY_PREFIX = "anytime_raw_history_"
+    const val PREF_TEMPERATURE_HISTORY_PREFIX = "anytime_temp_history_"
+    const val PREF_CT5_CIPHER_KEY_PREFIX = "anytime_ct5_cipher_"
+    const val PREF_CT5_RANDOM_B_PREFIX = "anytime_ct5_randomb_"
+    const val PREF_CT5_TEMP_ID_PREFIX = "anytime_ct5_tempid_"
 }

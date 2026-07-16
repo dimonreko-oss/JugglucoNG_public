@@ -10,6 +10,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -20,7 +21,9 @@ import tk.glucodata.logic.TrendEngine
 fun TrendIndicator(
     trendResult: TrendEngine.TrendResult,
     modifier: Modifier = Modifier,
-    color: Color = Color.Black
+    color: Color = Color.Black,
+    outlineColor: Color? = null,
+    shadowColor: Color? = null
 ) {
     // "Optically Correct Arrow" Engine
     // 1. Visual: 90-degree Head, Round Caps/Joins, Optical Centering.
@@ -106,6 +109,16 @@ fun TrendIndicator(
                 cap = StrokeCap.Round,
                 join = StrokeJoin.Round
             )
+            val outlineStyle = Stroke(
+                width = strokeWidth * 1.35f,
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round
+            )
+            val shadowStyle = Stroke(
+                width = strokeWidth,
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round
+            )
 
             // Centering Logic
             // We want the center of "totalVisualLen" to be at cx
@@ -126,6 +139,14 @@ fun TrendIndicator(
                 lineTo(arrowTipX, cy)
                 lineTo(arrowWingX, cy + headSpan/2)
             }
+            if (outlineColor == null) {
+                shadowColor?.let {
+                    translate(top = strokeWidth * 0.38f) {
+                        drawPath(path = pArrow, color = it.copy(alpha = it.alpha * 0.58f), style = shadowStyle)
+                    }
+                }
+            }
+            outlineColor?.let { drawPath(path = pArrow, color = it, style = outlineStyle) }
             drawPath(path = pArrow, color = color, style = arrStyle)
             
             if (showDouble) {
@@ -139,6 +160,14 @@ fun TrendIndicator(
                     lineTo(secondTipX, cy)
                     lineTo(secondWingX, cy + headSpan/2)
                 }
+                if (outlineColor == null) {
+                    shadowColor?.let {
+                        translate(top = strokeWidth * 0.38f) {
+                            drawPath(path = pSecond, color = it.copy(alpha = it.alpha * 0.58f), style = shadowStyle)
+                        }
+                    }
+                }
+                outlineColor?.let { drawPath(path = pSecond, color = it, style = outlineStyle) }
                 drawPath(path = pSecond, color = color, style = arrStyle)
             }
         }

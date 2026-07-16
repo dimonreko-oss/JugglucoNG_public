@@ -14,7 +14,18 @@
 //   anytime_device_name_<id> → advertised name (for family resolve after restart)
 //   anytime_tx_version_<id>  → firmware version string (e.g. "V1300")
 //   anytime_bound_<id>       → 1/0 ("known bound from previous session")
+//   anytime_ref_bg_x10_<id>  → latest accepted fingerstick reference, mg/dL × 10
+//   anytime_ref_bg_id_<id>   → glucose id the reference applies to
+//   anytime_ref_bg_applied_id_<id>
+//                            → latest reference glucose id already observed by the algorithm
+//   anytime_ref_bg_history_<id>
+//                            → compact accepted/applied fingerstick calibration event list
 //   anytime_raw_history_<id> → compact raw id/Ib/Iw/T history for JNI restore
+//   anytime_temp_history_<id>
+//                            → compact timestamped T history for Stats
+//   anytime_ct5_cipher_<id>  → CT5 session cipher byte (0..255), -1 if unknown
+//   anytime_ct5_randomb_<id> → CT5 reconnect identity randomB, hex encoded
+//   anytime_ct5_tempid_<id>  → CT5 4-digit temporary ID used by setParameters
 
 package tk.glucodata.drivers.anytime
 
@@ -37,12 +48,21 @@ object AnytimeRegistry {
         val address: String,
         val displayName: String,
     ) {
-        fun matchesId(id: String?): Boolean =
-            AnytimeConstants.matchesCanonicalOrKnownNativeAlias(sensorId, id)
+        fun matchesId(id: String?): Boolean {
+            val candidate = id?.trim().takeIf { !it.isNullOrBlank() } ?: return false
+            return listOf(sensorId, address, displayName)
+                .any { AnytimeConstants.matchesCanonicalOrKnownNativeAlias(it, candidate) }
+        }
     }
 
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    data class TemperatureRecord(
+        val glucoseId: Int,
+        val timestampMs: Long,
+        val temperatureC: Float,
+    )
 
     // ---- Record set ----
 
@@ -83,7 +103,10 @@ object AnytimeRegistry {
     fun findRecord(context: Context?, sensorId: String?): SensorRecord? {
         val ctx = context ?: return null
         val id = sensorId?.trim().takeIf { !it.isNullOrBlank() } ?: return null
-        return persistedRecords(ctx).firstOrNull { it.matchesId(id) }
+        return persistedRecords(ctx).firstOrNull { record ->
+            record.matchesId(id) ||
+                AnytimeConstants.matchesCanonicalOrKnownNativeAlias(loadDeviceName(ctx, record.sensorId), id)
+        }
     }
 
     @JvmStatic
@@ -174,6 +197,131 @@ object AnytimeRegistry {
         prefs(c).edit().putBoolean(AnytimeConstants.PREF_BOUND_PREFIX + id, bound).apply()
     }
 
+    @JvmStatic fun loadReferenceBgMgdlTimes10(c: Context, id: String): Int =
+        prefs(c).getInt(AnytimeConstants.PREF_REF_BG_MGDL_TIMES10_PREFIX + id, 0)
+    @JvmStatic fun saveReferenceBgMgdlTimes10(c: Context, id: String, value: Int) {
+        val editor = prefs(c).edit()
+        if (value > 0) editor.putInt(AnytimeConstants.PREF_REF_BG_MGDL_TIMES10_PREFIX + id, value)
+        else editor.remove(AnytimeConstants.PREF_REF_BG_MGDL_TIMES10_PREFIX + id)
+        editor.apply()
+    }
+
+    @JvmStatic fun loadReferenceBgGlucoseId(c: Context, id: String): Int =
+        prefs(c).getInt(AnytimeConstants.PREF_REF_BG_GLUCOSE_ID_PREFIX + id, 0)
+    @JvmStatic fun saveReferenceBgGlucoseId(c: Context, id: String, glucoseId: Int) {
+        val editor = prefs(c).edit()
+        if (glucoseId > 0) editor.putInt(AnytimeConstants.PREF_REF_BG_GLUCOSE_ID_PREFIX + id, glucoseId)
+        else editor.remove(AnytimeConstants.PREF_REF_BG_GLUCOSE_ID_PREFIX + id)
+        editor.apply()
+    }
+
+    @JvmStatic fun loadReferenceBgAppliedGlucoseId(c: Context, id: String): Int =
+        prefs(c).getInt(AnytimeConstants.PREF_REF_BG_APPLIED_GLUCOSE_ID_PREFIX + id, 0)
+    @JvmStatic fun saveReferenceBgAppliedGlucoseId(c: Context, id: String, glucoseId: Int) {
+        val editor = prefs(c).edit()
+        if (glucoseId > 0) editor.putInt(AnytimeConstants.PREF_REF_BG_APPLIED_GLUCOSE_ID_PREFIX + id, glucoseId)
+        else editor.remove(AnytimeConstants.PREF_REF_BG_APPLIED_GLUCOSE_ID_PREFIX + id)
+        editor.apply()
+    }
+
+    @JvmStatic
+    fun loadReferenceBgHistory(c: Context, id: String): List<AnytimeReferenceCalibrationRecord> {
+        val encoded = prefs(c).getString(AnytimeConstants.PREF_REF_BG_HISTORY_PREFIX + id, null).orEmpty()
+        if (encoded.isBlank()) return emptyList()
+        return encoded.split(';')
+            .mapNotNull { token ->
+                if (token.isBlank()) return@mapNotNull null
+                val parts = token.split(',')
+                if (parts.size != 6) return@mapNotNull null
+                val targetId = parts[0].toIntOrNull() ?: return@mapNotNull null
+                val refX10 = parts[1].toIntOrNull() ?: return@mapNotNull null
+                val acceptedAt = parts[2].toLongOrNull() ?: return@mapNotNull null
+                val appliedId = parts[3].toIntOrNull() ?: return@mapNotNull null
+                val appliedAt = parts[4].toLongOrNull() ?: return@mapNotNull null
+                val outputX10 = parts[5].toIntOrNull() ?: return@mapNotNull null
+                if (targetId <= 0 || refX10 <= 0) return@mapNotNull null
+                AnytimeReferenceCalibrationRecord(
+                    targetGlucoseId = targetId,
+                    referenceMgdlTimes10 = refX10,
+                    acceptedAtMs = acceptedAt.coerceAtLeast(0L),
+                    appliedGlucoseId = appliedId.coerceAtLeast(0),
+                    appliedAtMs = appliedAt.coerceAtLeast(0L),
+                    outputMgdlTimes10 = outputX10.coerceAtLeast(0),
+                )
+            }
+            .distinctBy { it.targetGlucoseId }
+            .sortedWith(compareByDescending<AnytimeReferenceCalibrationRecord> { it.acceptedAtMs }
+                .thenByDescending { it.targetGlucoseId })
+    }
+
+    @JvmStatic
+    fun saveReferenceBgHistory(c: Context, id: String, records: Collection<AnytimeReferenceCalibrationRecord>) {
+        val ordered = records
+            .asSequence()
+            .filter { it.targetGlucoseId > 0 && it.referenceMgdlTimes10 > 0 }
+            .distinctBy { it.targetGlucoseId }
+            .sortedWith(compareByDescending<AnytimeReferenceCalibrationRecord> { it.acceptedAtMs }
+                .thenByDescending { it.targetGlucoseId })
+            .take(12)
+            .toList()
+        val editor = prefs(c).edit()
+        if (ordered.isEmpty()) {
+            editor.remove(AnytimeConstants.PREF_REF_BG_HISTORY_PREFIX + id).apply()
+            return
+        }
+        val encoded = buildString(ordered.size * 40) {
+            ordered.forEach { rec ->
+                append(rec.targetGlucoseId)
+                append(',')
+                append(rec.referenceMgdlTimes10.coerceAtLeast(0))
+                append(',')
+                append(rec.acceptedAtMs.coerceAtLeast(0L))
+                append(',')
+                append(rec.appliedGlucoseId.coerceAtLeast(0))
+                append(',')
+                append(rec.appliedAtMs.coerceAtLeast(0L))
+                append(',')
+                append(rec.outputMgdlTimes10.coerceAtLeast(0))
+                append(';')
+            }
+        }
+        editor.putString(AnytimeConstants.PREF_REF_BG_HISTORY_PREFIX + id, encoded).apply()
+    }
+
+    @JvmStatic fun loadCt5CipherKey(c: Context, id: String): Int =
+        prefs(c).getInt(AnytimeConstants.PREF_CT5_CIPHER_KEY_PREFIX + id, -1)
+    @JvmStatic fun saveCt5CipherKey(c: Context, id: String, key: Int) {
+        prefs(c).edit().putInt(AnytimeConstants.PREF_CT5_CIPHER_KEY_PREFIX + id, key.coerceIn(-1, 255)).apply()
+    }
+
+    @JvmStatic fun loadCt5TempId(c: Context, id: String): String =
+        prefs(c).getString(AnytimeConstants.PREF_CT5_TEMP_ID_PREFIX + id, null).orEmpty()
+    @JvmStatic fun saveCt5TempId(c: Context, id: String, tempId: String) {
+        prefs(c).edit().putString(AnytimeConstants.PREF_CT5_TEMP_ID_PREFIX + id, tempId.take(4)).apply()
+    }
+
+    @JvmStatic
+    fun loadCt5RandomB(c: Context, id: String): IntArray? {
+        val encoded = prefs(c).getString(AnytimeConstants.PREF_CT5_RANDOM_B_PREFIX + id, null).orEmpty()
+        if (encoded.length != 8) return null
+        val out = IntArray(4)
+        for (i in 0 until 4) {
+            out[i] = encoded.substring(i * 2, i * 2 + 2).toIntOrNull(16) ?: return null
+        }
+        return out
+    }
+
+    @JvmStatic
+    fun saveCt5RandomB(c: Context, id: String, randomB: IntArray?) {
+        val editor = prefs(c).edit()
+        if (randomB == null || randomB.size != 4) {
+            editor.remove(AnytimeConstants.PREF_CT5_RANDOM_B_PREFIX + id).apply()
+            return
+        }
+        val encoded = randomB.joinToString("") { "%02X".format(it and 0xFF) }
+        editor.putString(AnytimeConstants.PREF_CT5_RANDOM_B_PREFIX + id, encoded).apply()
+    }
+
     @JvmStatic
     fun loadRawHistory(c: Context, id: String): List<AnytimeRawRecord> {
         val encoded = prefs(c).getString(AnytimeConstants.PREF_RAW_HISTORY_PREFIX + id, null).orEmpty()
@@ -230,6 +378,55 @@ object AnytimeRegistry {
         editor.putString(AnytimeConstants.PREF_RAW_HISTORY_PREFIX + id, encoded).apply()
     }
 
+    @JvmStatic
+    fun loadTemperatureHistory(c: Context, id: String): List<TemperatureRecord> {
+        val encoded = prefs(c).getString(AnytimeConstants.PREF_TEMPERATURE_HISTORY_PREFIX + id, null).orEmpty()
+        if (encoded.isBlank()) return emptyList()
+        val out = ArrayList<TemperatureRecord>()
+        encoded.split(';').forEach { token ->
+            if (token.isBlank()) return@forEach
+            val parts = token.split(',')
+            if (parts.size != 3) return@forEach
+            val glucoseId = parts[0].toIntOrNull() ?: return@forEach
+            val timestampMs = parts[1].toLongOrNull() ?: return@forEach
+            val tempRaw = parts[2].toIntOrNull() ?: return@forEach
+            val temperatureC = tempRaw / 10f
+            if (glucoseId < 0 || timestampMs <= 0L || !temperatureC.isFinite()) return@forEach
+            out.add(TemperatureRecord(glucoseId, timestampMs, temperatureC))
+        }
+        return out
+            .distinctBy { it.timestampMs }
+            .sortedBy { it.timestampMs }
+    }
+
+    @JvmStatic
+    fun appendTemperatureHistory(c: Context, id: String, records: Collection<TemperatureRecord>) {
+        if (records.isEmpty()) return
+        val merged = (loadTemperatureHistory(c, id).asSequence() + records.asSequence())
+            .filter { it.glucoseId >= 0 && it.timestampMs > 0L }
+            .filter { it.temperatureC.isFinite() && it.temperatureC > -20f && it.temperatureC < 80f }
+            .distinctBy { it.timestampMs }
+            .sortedBy { it.timestampMs }
+            .toList()
+            .takeLast(9000)
+        val editor = prefs(c).edit()
+        if (merged.isEmpty()) {
+            editor.remove(AnytimeConstants.PREF_TEMPERATURE_HISTORY_PREFIX + id).apply()
+            return
+        }
+        val encoded = buildString(merged.size * 24) {
+            merged.forEach { rec ->
+                append(rec.glucoseId)
+                append(',')
+                append(rec.timestampMs)
+                append(',')
+                append((rec.temperatureC * 10f).roundToInt())
+                append(';')
+            }
+        }
+        editor.putString(AnytimeConstants.PREF_TEMPERATURE_HISTORY_PREFIX + id, encoded).apply()
+    }
+
     private fun clearPerSensorState(context: Context, sensorId: String) {
         prefs(context).edit().apply {
             remove(AnytimeConstants.PREF_QR_CONTENT_PREFIX + sensorId)
@@ -243,7 +440,15 @@ object AnytimeRegistry {
             remove(AnytimeConstants.PREF_DEVICE_NAME_PREFIX + sensorId)
             remove(AnytimeConstants.PREF_TRANSMITTER_VERSION_PREFIX + sensorId)
             remove(AnytimeConstants.PREF_BOUND_PREFIX + sensorId)
+            remove(AnytimeConstants.PREF_REF_BG_MGDL_TIMES10_PREFIX + sensorId)
+            remove(AnytimeConstants.PREF_REF_BG_GLUCOSE_ID_PREFIX + sensorId)
+            remove(AnytimeConstants.PREF_REF_BG_APPLIED_GLUCOSE_ID_PREFIX + sensorId)
+            remove(AnytimeConstants.PREF_REF_BG_HISTORY_PREFIX + sensorId)
             remove(AnytimeConstants.PREF_RAW_HISTORY_PREFIX + sensorId)
+            remove(AnytimeConstants.PREF_TEMPERATURE_HISTORY_PREFIX + sensorId)
+            remove(AnytimeConstants.PREF_CT5_CIPHER_KEY_PREFIX + sensorId)
+            remove(AnytimeConstants.PREF_CT5_RANDOM_B_PREFIX + sensorId)
+            remove(AnytimeConstants.PREF_CT5_TEMP_ID_PREFIX + sensorId)
         }.apply()
     }
 

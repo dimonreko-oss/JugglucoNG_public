@@ -37,9 +37,10 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.ImportExport
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WaterDrop
@@ -57,16 +58,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import tk.glucodata.Natives
 import tk.glucodata.R
+import tk.glucodata.SensorIdentity
 import tk.glucodata.data.HistoryRepository
 import tk.glucodata.data.calibration.CalibrationEntity
 import tk.glucodata.data.calibration.CalibrationManager
+import tk.glucodata.ui.components.CompactSheetDragHandle
 import tk.glucodata.ui.components.StyledSwitch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -99,8 +102,10 @@ fun CalibrationListScreen(
     navController: NavController,
     isMmol: Boolean,
     viewMode: Int = 0, // Default to 0 (Auto)
+    sensorId: String,
     onAdd: () -> Unit,
-    onEdit: (CalibrationEntity) -> Unit
+    onEdit: (CalibrationEntity) -> Unit,
+    onOpenModelTable: () -> Unit
 ) {
     val isRawMode = viewMode == 1 || viewMode == 3
     val modeTitle = if (isRawMode) stringResource(R.string.raw) else stringResource(R.string.auto)
@@ -109,20 +114,24 @@ fun CalibrationListScreen(
     val allCalibrations by CalibrationManager
         .getCalibrationsFlow()
         .collectAsState(initial = CalibrationManager.getCachedCalibrations())
-    val currentSensor = Natives.lastsensorname() ?: ""
+    val currentSensor = SensorIdentity.resolveAppSensorId(sensorId) ?: sensorId
     
     // Filter by mode and current sensor
     val calibrations = allCalibrations
         .asSequence()
         .filter { it.isRawMode == isRawMode }
-        .filter { it.sensorId == currentSensor || it.sensorId.isEmpty() }
+        .filter {
+            currentSensor.isNotBlank() &&
+                CalibrationManager.calibrationMatchesSensor(it.sensorId, currentSensor)
+        }
         .sortedByDescending { it.timestamp }
         .toList()
 
     // Toggle State
-    val isEnabledForRaw by CalibrationManager.isEnabledForRaw.collectAsState()
-    val isEnabledForAuto by CalibrationManager.isEnabledForAuto.collectAsState()
-    val isCalibrationEnabled = if (isRawMode) isEnabledForRaw else isEnabledForAuto
+    val calibrationRevision by CalibrationManager.revision.collectAsState()
+    val isCalibrationEnabled = remember(isRawMode, currentSensor, calibrationRevision) {
+        CalibrationManager.isEnabledForMode(isRawMode, currentSensor)
+    }
     val algorithmForRaw by CalibrationManager.algorithmForRaw.collectAsState()
     val algorithmForAuto by CalibrationManager.algorithmForAuto.collectAsState()
     val selectedAlgorithm = if (isRawMode) algorithmForRaw else algorithmForAuto
@@ -132,8 +141,10 @@ fun CalibrationListScreen(
     val hideInitialWhenCalibrated by CalibrationManager.hideInitialWhenCalibrated.collectAsState()
     val applyToPast by CalibrationManager.applyToPast.collectAsState()
     val lockPastHistory by CalibrationManager.lockPastHistory.collectAsState()
+    val keepDisabledHistory by CalibrationManager.keepDisabledHistory.collectAsState()
     val overwriteSensorValues by CalibrationManager.overwriteSensorValues.collectAsState()
     val visualContinuity by CalibrationManager.visualContinuity.collectAsState()
+    val weightMode by CalibrationManager.weightMode.collectAsState()
 
     val dateFormatter = remember { SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()) }
     val scope = rememberCoroutineScope()
@@ -151,7 +162,7 @@ fun CalibrationListScreen(
         historyRepository.rewriteSensorValuesWithCalibration(currentSensor, isRawMode)
     }
 
-    var showOverflowMenu by remember { mutableStateOf(false) }
+    var showImportExportSheet by rememberSaveable { mutableStateOf(false) }
     var pendingExportPayload by remember { mutableStateOf<String?>(null) }
     var replaceExistingOnImport by remember { mutableStateOf(false) }
 
@@ -206,6 +217,31 @@ fun CalibrationListScreen(
                 )
             }
         }
+    }
+
+    fun exportCurrentSensorProfile() {
+        if (currentSensor.isBlank()) {
+            scope.launch {
+                snackbarHostState.showSnackbar(context.getString(R.string.no_active_sensor_selected))
+            }
+            return
+        }
+
+        val payload = CalibrationManager.exportProfileForSensorAsJson(currentSensor)
+        if (payload.isNullOrBlank()) {
+            scope.launch {
+                snackbarHostState.showSnackbar(context.getString(R.string.no_calibrations_to_export))
+            }
+            return
+        }
+
+        pendingExportPayload = payload
+        exportProfileLauncher.launch("calibration_profile_$currentSensor.json")
+    }
+
+    fun importCurrentSensorProfile(replaceExisting: Boolean) {
+        replaceExistingOnImport = replaceExisting
+        importProfileLauncher.launch(arrayOf("application/json", "text/*"))
     }
     
     // Multi-select state
@@ -272,59 +308,17 @@ fun CalibrationListScreen(
                         }
                     },
                     actions = {
-                        Box {
-                            IconButton(onClick = { showOverflowMenu = true }) {
-                                Icon(Icons.Default.MoreVert, contentDescription = null)
-                            }
-
-                            DropdownMenu(
-                                expanded = showOverflowMenu,
-                                onDismissRequest = { showOverflowMenu = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.export_profile)) },
-                                    leadingIcon = { Icon(Icons.Default.FileDownload, contentDescription = null) },
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        if (currentSensor.isBlank()) {
-                                            scope.launch {
-                                                snackbarHostState.showSnackbar(context.getString(R.string.no_active_sensor_selected))
-                                            }
-                                        } else {
-                                            val payload = CalibrationManager.exportProfileForSensorAsJson(currentSensor)
-                                            if (payload.isNullOrBlank()) {
-                                                scope.launch {
-                                                    snackbarHostState.showSnackbar(context.getString(R.string.no_calibrations_to_export))
-                                                }
-                                            } else {
-                                                pendingExportPayload = payload
-                                                val modeSuffix = if (isRawMode) "raw" else "auto"
-                                                exportProfileLauncher.launch("calibration_profile_${currentSensor}_$modeSuffix.json")
-                                            }
-                                        }
-                                    }
-                                )
-
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.import_profile_merge)) },
-                                    leadingIcon = { Icon(Icons.Default.FileUpload, contentDescription = null) },
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        replaceExistingOnImport = false
-                                        importProfileLauncher.launch(arrayOf("application/json", "text/*"))
-                                    }
-                                )
-
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.import_profile_replace)) },
-                                    leadingIcon = { Icon(Icons.Default.FileUpload, contentDescription = null) },
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        replaceExistingOnImport = true
-                                        importProfileLauncher.launch(arrayOf("application/json", "text/*"))
-                                    }
-                                )
-                            }
+                        IconButton(onClick = onOpenModelTable) {
+                            Icon(
+                                imageVector = Icons.Default.Analytics,
+                                contentDescription = stringResource(R.string.calibration_model_table_action)
+                            )
+                        }
+                        IconButton(onClick = { showImportExportSheet = true }) {
+                            Icon(
+                                imageVector = Icons.Default.ImportExport,
+                                contentDescription = stringResource(R.string.calibration_import_export_action)
+                            )
                         }
                     }
                 )
@@ -362,10 +356,11 @@ fun CalibrationListScreen(
                             hideInitialWhenCalibrated = hideInitialWhenCalibrated,
                             applyToPast = applyToPast,
                             lockPastHistory = lockPastHistory,
+                            keepDisabledHistory = keepDisabledHistory,
                             overwriteSensorValues = overwriteSensorValues,
                             visualContinuity = visualContinuity,
                             onToggle = { enabled ->
-                                CalibrationManager.setEnabledForMode(isRawMode, enabled)
+                                CalibrationManager.setEnabledForMode(isRawMode, enabled, currentSensor)
                                 if (enabled && overwriteSensorValues && currentSensor.isNotBlank()) {
                                     scope.launch {
                                         historyRepository.rewriteSensorValuesWithCalibration(currentSensor, isRawMode)
@@ -391,6 +386,14 @@ fun CalibrationListScreen(
                                     }
                                 }
                             },
+                            onToggleKeepDisabledHistory = { enabled ->
+                                CalibrationManager.setKeepDisabledHistory(enabled)
+                                if (overwriteSensorValues && currentSensor.isNotBlank()) {
+                                    scope.launch {
+                                        historyRepository.rewriteSensorValuesWithCalibration(currentSensor, isRawMode)
+                                    }
+                                }
+                            },
                             onToggleOverwriteSensorValues = { enabled ->
                                 CalibrationManager.setOverwriteSensorValues(enabled)
                                 if (enabled && currentSensor.isNotBlank()) {
@@ -410,8 +413,17 @@ fun CalibrationListScreen(
                             isCalibrationEnabled = isCalibrationEnabled,
                             selectedAlgorithm = selectedAlgorithm,
                             diagnostics = diagnostics,
+                            selectedWeightMode = weightMode,
                             onSelectAlgorithm = { algorithm ->
                                 CalibrationManager.setAlgorithmForMode(isRawMode, algorithm)
+                            },
+                            onSelectWeightMode = { mode ->
+                                CalibrationManager.setWeightMode(mode)
+                                if (overwriteSensorValues && currentSensor.isNotBlank()) {
+                                    scope.launch {
+                                        historyRepository.rewriteSensorValuesWithCalibration(currentSensor, isRawMode)
+                                    }
+                                }
                             }
                         )
                     }
@@ -630,6 +642,24 @@ fun CalibrationListScreen(
             totalCount = calibrations.size
         )
     }
+
+    if (showImportExportSheet) {
+        CalibrationImportExportBottomSheet(
+            onDismiss = { showImportExportSheet = false },
+            onExport = {
+                showImportExportSheet = false
+                exportCurrentSensorProfile()
+            },
+            onImportMerge = {
+                showImportExportSheet = false
+                importCurrentSensorProfile(replaceExisting = false)
+            },
+            onImportReplace = {
+                showImportExportSheet = false
+                importCurrentSensorProfile(replaceExisting = true)
+            }
+        )
+    }
     
 }
 
@@ -642,12 +672,14 @@ private fun MasterCalibrationCard(
     hideInitialWhenCalibrated: Boolean,
     applyToPast: Boolean,
     lockPastHistory: Boolean,
+    keepDisabledHistory: Boolean,
     overwriteSensorValues: Boolean,
     visualContinuity: Boolean,
     onToggle: (Boolean) -> Unit,
     onToggleHideInitial: (Boolean) -> Unit,
     onToggleApplyToPast: (Boolean) -> Unit,
     onToggleLockPastHistory: (Boolean) -> Unit,
+    onToggleKeepDisabledHistory: (Boolean) -> Unit,
     onToggleOverwriteSensorValues: (Boolean) -> Unit,
     onToggleVisualContinuity: (Boolean) -> Unit
 ) {
@@ -785,13 +817,21 @@ private fun MasterCalibrationCard(
                     )
                     HorizontalDivider(color = rowDividerColor)
                     MasterToggleRow(
-                        title = stringResource(R.string.calibration_overwrite_values_title),
-                        subtitle = stringResource(R.string.calibration_overwrite_values_subtitle),
-                        checked = overwriteSensorValues,
-                        enabled = isEnabled,
-                        onToggle = onToggleOverwriteSensorValues
+                        title = stringResource(R.string.calibration_keep_disabled_history_title),
+                        subtitle = stringResource(R.string.calibration_keep_disabled_history_subtitle),
+                        checked = keepDisabledHistory,
+                        enabled = isEnabled && lockPastHistory,
+                        onToggle = onToggleKeepDisabledHistory
                     )
                     HorizontalDivider(color = rowDividerColor)
+//                    MasterToggleRow(
+//                        title = stringResource(R.string.calibration_overwrite_values_title),
+//                        subtitle = stringResource(R.string.calibration_overwrite_values_subtitle),
+//                        checked = overwriteSensorValues,
+//                        enabled = isEnabled,
+//                        onToggle = onToggleOverwriteSensorValues
+//                    )
+//                    HorizontalDivider(color = rowDividerColor)
                     MasterToggleRow(
                         title = stringResource(R.string.calibrate_a),
                         subtitle = stringResource(R.string.calibration_visual_continuity_subtitle),
@@ -819,7 +859,7 @@ private fun MasterToggleRow(
             .fillMaxWidth()
             .heightIn(min = 64.dp)
             .graphicsLayer { alpha = if (enabled) 1f else 0.62f }
-            .clickable { onToggle(!checked) }
+            .clickable(enabled = enabled) { onToggle(!checked) }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -841,7 +881,8 @@ private fun MasterToggleRow(
         ) {
             StyledSwitch(
                 checked = checked,
-                onCheckedChange = onToggle
+                onCheckedChange = onToggle,
+                enabled = enabled
             )
         }
     }
@@ -852,7 +893,9 @@ private fun CalibrationAlgorithmCard(
     isCalibrationEnabled: Boolean,
     selectedAlgorithm: CalibrationManager.CalibrationAlgorithm,
     diagnostics: CalibrationManager.CalibrationDiagnostics,
-    onSelectAlgorithm: (CalibrationManager.CalibrationAlgorithm) -> Unit
+    selectedWeightMode: CalibrationManager.CalibrationWeightMode,
+    onSelectAlgorithm: (CalibrationManager.CalibrationAlgorithm) -> Unit,
+    onSelectWeightMode: (CalibrationManager.CalibrationWeightMode) -> Unit
 ) {
     val algorithms = remember { CalibrationManager.CalibrationAlgorithm.values().toList() }
     var expanded by rememberSaveable { mutableStateOf(false) }
@@ -975,12 +1018,77 @@ private fun CalibrationAlgorithmCard(
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
+                    CalibrationWeightControl(
+                        selectedMode = selectedWeightMode,
+                        enabled = isCalibrationEnabled,
+                        onSelectMode = onSelectWeightMode
+                    )
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
                     Box(modifier = Modifier.padding(12.dp)) {
                         CalibrationDiagnosticsPanel(diagnostics = diagnostics)
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CalibrationWeightControl(
+    selectedMode: CalibrationManager.CalibrationWeightMode,
+    enabled: Boolean,
+    onSelectMode: (CalibrationManager.CalibrationWeightMode) -> Unit
+) {
+    val modes = remember { CalibrationManager.CalibrationWeightMode.values().toList() }
+    val selectedDescription = when (selectedMode) {
+        CalibrationManager.CalibrationWeightMode.FRESH -> stringResource(R.string.calibration_weight_fresh_desc)
+        CalibrationManager.CalibrationWeightMode.BALANCED -> stringResource(R.string.calibration_weight_balanced_desc)
+        CalibrationManager.CalibrationWeightMode.STABLE -> stringResource(R.string.calibration_weight_stable_desc)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer { alpha = if (enabled) 1f else 0.62f }
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.calibration_weight_title),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            modes.forEach { mode ->
+                FilterChip(
+                    selected = mode == selectedMode,
+                    onClick = { if (enabled) onSelectMode(mode) },
+                    enabled = enabled,
+                    label = {
+                        Text(
+                            text = when (mode) {
+                                CalibrationManager.CalibrationWeightMode.FRESH -> stringResource(R.string.calibration_weight_fresh)
+                                CalibrationManager.CalibrationWeightMode.BALANCED -> stringResource(R.string.calibration_weight_balanced)
+                                CalibrationManager.CalibrationWeightMode.STABLE -> stringResource(R.string.calibration_weight_stable)
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+        Text(
+            text = selectedDescription,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -1495,6 +1603,146 @@ private fun SelectionModeToolbar(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CalibrationImportExportBottomSheet(
+    onDismiss: () -> Unit,
+    onExport: () -> Unit,
+    onImportMerge: () -> Unit,
+    onImportReplace: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState()
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        dragHandle = { CompactSheetDragHandle() },
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .navigationBarsPadding()
+                .padding(bottom = 24.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.calibration_import_export_title),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = stringResource(R.string.calibration_import_export_desc),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            CalibrationTransferAction(
+                title = stringResource(R.string.export_profile),
+                subtitle = stringResource(R.string.calibration_export_profile_desc),
+                icon = Icons.Default.FileUpload,
+                onClick = onExport
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            CalibrationTransferAction(
+                title = stringResource(R.string.import_profile_merge),
+                subtitle = stringResource(R.string.calibration_import_merge_desc),
+                icon = Icons.Default.FileDownload,
+                onClick = onImportMerge
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            CalibrationTransferAction(
+                title = stringResource(R.string.import_profile_replace),
+                subtitle = stringResource(R.string.calibration_import_replace_desc),
+                icon = Icons.Default.FileDownload,
+                onClick = onImportReplace,
+                isDestructive = true
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(stringResource(R.string.cancel))
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalibrationTransferAction(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+    isDestructive: Boolean = false
+) {
+    val contentColor = if (isDestructive) {
+        MaterialTheme.colorScheme.error
+    } else {
+        MaterialTheme.colorScheme.primary
+    }
+    val containerColor = if (isDestructive) {
+        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.32f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerLow
+    }
+
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(12.dp),
+        color = containerColor,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier.size(44.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = contentColor.copy(alpha = 0.14f)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = contentColor,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(16.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = if (isDestructive) contentColor else MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
 /**
  * Bottom sheet for clear options following M3 guidelines
  */
@@ -1512,7 +1760,7 @@ private fun ClearOptionsBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        dragHandle = { BottomSheetDefaults.DragHandle() }
+        dragHandle = { CompactSheetDragHandle() }
     ) {
         Column(
             modifier = Modifier

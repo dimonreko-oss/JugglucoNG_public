@@ -1,0 +1,182 @@
+package tk.glucodata.drivers.anytime
+
+import tk.glucodata.drivers.VirtualGlucoseSensorBridge
+
+internal class AnytimeHistoryCaughtUpCooldown(
+    private val cooldownMs: Long,
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
+) {
+    private var caughtUpNextRequestId: Int = -1
+    private var caughtUpAtMs: Long = 0L
+
+    @Synchronized
+    fun markCaughtUp(nextRequestId: Int) {
+        caughtUpNextRequestId = nextRequestId.coerceAtLeast(0)
+        caughtUpAtMs = nowMs()
+    }
+
+    @Synchronized
+    fun clearIfNewerData(glucoseId: Int) {
+        val caughtUpNext = caughtUpNextRequestId
+        if (caughtUpNext >= 0 && glucoseId >= caughtUpNext) {
+            clear()
+        }
+    }
+
+    @Synchronized
+    fun clear() {
+        caughtUpNextRequestId = -1
+        caughtUpAtMs = 0L
+    }
+
+    @Synchronized
+    fun shouldSuppressBackfill(
+        startId: Int,
+        stopBeforeId: Int,
+        reason: String,
+        lastGlucoseId: Int,
+    ): Boolean {
+        if (reason.startsWith("user-requested")) return false
+        val caughtUpNext = caughtUpNextRequestId
+        if (caughtUpNext < 0 || stopBeforeId != Int.MAX_VALUE) return false
+        if (startId < caughtUpNext) return false
+        if (lastGlucoseId >= caughtUpNext) return false
+        val elapsed = nowMs() - caughtUpAtMs
+        return elapsed in 0 until cooldownMs
+    }
+}
+
+internal fun sanitizeRestoredGlucoseId(
+    persistedLastId: Int,
+    cachedRawMaxId: Int,
+    rollbackThreshold: Int,
+): Int {
+    if (persistedLastId < 0) return persistedLastId
+    if (cachedRawMaxId < 0) return persistedLastId
+    return if (liveIdLooksRolledBack(
+            liveId = cachedRawMaxId,
+            previousMaxId = persistedLastId,
+            rollbackThreshold = rollbackThreshold,
+        )
+    ) {
+        cachedRawMaxId
+    } else {
+        persistedLastId
+    }
+}
+
+internal fun liveIdLooksRolledBack(
+    liveId: Int,
+    previousMaxId: Int,
+    rollbackThreshold: Int,
+): Boolean =
+    liveId >= 0 &&
+            previousMaxId >= 0 &&
+            liveId + rollbackThreshold.coerceAtLeast(0) < previousMaxId
+
+internal data class AnytimePendingHistoryRoomImport(
+    val glucoseId: Int,
+    val source: AnytimeAlgorithm.Source,
+    val priority: Int,
+    val rawMgdl: Float,
+    val temperatureC: Float,
+    val reading: VirtualGlucoseSensorBridge.Reading,
+)
+
+internal class AnytimeHistoryRoomImportBuffer {
+    private val pending = LinkedHashMap<Int, AnytimePendingHistoryRoomImport>()
+    private val seenPriorities = HashMap<Int, Int>()
+
+    @Synchronized
+    fun queue(sampleMs: Long, result: AnytimeAlgorithm.Result): Boolean {
+        val raw = if (result.rawMgdl.isNaN()) result.mgdl else result.rawMgdl
+        val priority = sourcePriority(result.source)
+        return queueInternal(
+            sampleMs = sampleMs,
+            glucoseId = result.glucoseId,
+            source = result.source,
+            priority = priority,
+            glucoseMgdl = result.mgdl,
+            rawMgdl = raw,
+            temperatureC = result.temperatureC,
+        )
+    }
+
+    @Synchronized
+    fun queueRawOnly(sampleMs: Long, result: AnytimeAlgorithm.Result): Boolean {
+        val raw = if (result.rawMgdl.isNaN()) result.mgdl else result.rawMgdl
+        if (!raw.isFinite() || raw <= 0f) return false
+        return queueInternal(
+            sampleMs = sampleMs,
+            glucoseId = result.glucoseId,
+            source = result.source,
+            priority = RAW_ONLY_PRIORITY,
+            glucoseMgdl = Float.NaN,
+            rawMgdl = raw,
+            temperatureC = result.temperatureC,
+        )
+    }
+
+    private fun queueInternal(
+        sampleMs: Long,
+        glucoseId: Int,
+        source: AnytimeAlgorithm.Source,
+        priority: Int,
+        glucoseMgdl: Float,
+        rawMgdl: Float,
+        temperatureC: Float,
+    ): Boolean {
+        val seenPriority = seenPriorities[glucoseId]
+        val pendingPriority = pending[glucoseId]?.priority
+        val bestKnownPriority = maxOf(seenPriority ?: NO_PRIORITY, pendingPriority ?: NO_PRIORITY)
+        if (bestKnownPriority >= priority) return false
+
+        pending[glucoseId] = AnytimePendingHistoryRoomImport(
+            glucoseId = glucoseId,
+            source = source,
+            priority = priority,
+            rawMgdl = rawMgdl,
+            temperatureC = temperatureC,
+            reading = VirtualGlucoseSensorBridge.Reading(
+                timestampMs = sampleMs,
+                glucoseMgdl = glucoseMgdl,
+                rawMgdl = rawMgdl,
+            ),
+        )
+        return true
+    }
+
+    @Synchronized
+    fun clear() {
+        pending.clear()
+        seenPriorities.clear()
+    }
+
+    @Synchronized
+    fun drain(): List<AnytimePendingHistoryRoomImport> {
+        if (pending.isEmpty()) return emptyList()
+        return pending.values.toList().also {
+            pending.clear()
+        }
+    }
+
+    @Synchronized
+    fun markImported(imports: List<AnytimePendingHistoryRoomImport>) {
+        imports.forEach { item ->
+            val previousPriority = seenPriorities[item.glucoseId] ?: 0
+            if (item.priority > previousPriority) {
+                seenPriorities[item.glucoseId] = item.priority
+            }
+        }
+    }
+
+    private fun sourcePriority(source: AnytimeAlgorithm.Source): Int = when (source) {
+        AnytimeAlgorithm.Source.NATIVE -> 2
+        AnytimeAlgorithm.Source.LINEAR -> 1
+    }
+
+    private companion object {
+        private const val NO_PRIORITY = -1
+        private const val RAW_ONLY_PRIORITY = 0
+    }
+}

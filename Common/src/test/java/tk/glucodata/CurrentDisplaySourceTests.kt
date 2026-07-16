@@ -2,8 +2,65 @@ package tk.glucodata
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.util.Locale
 
 class CurrentDisplaySourceTests {
+
+    @Test
+    fun resolveFromLive_keepsDisplayLocalizedButSpeechDotDelimitedInMmol() {
+        val originalLocale = Locale.getDefault()
+        try {
+            Locale.setDefault(Locale.GERMANY)
+            val timestamp = 1_700_000_000_000L
+            val recentPoints = listOf(GlucosePoint(timestamp, 3.4f, 1.2f))
+
+            val snapshot = CurrentDisplaySource.resolveFromLive(
+                liveValueText = null,
+                liveNumericValue = 3.4f,
+                rate = 0f,
+                targetTimeMillis = timestamp,
+                sensorId = "locale-test",
+                sensorGen = 0,
+                index = 0,
+                source = "test",
+                recentPoints = recentPoints,
+                viewMode = 2,
+                isMmol = true
+            )
+
+            requireNotNull(snapshot)
+            assertEquals("3,4", snapshot.primaryStr)
+            assertEquals("1,2", snapshot.secondaryStr)
+            assertEquals("3.4", snapshot.speechPrimaryStr)
+        } finally {
+            Locale.setDefault(originalLocale)
+        }
+    }
+
+    @Test
+    fun resolveFromLive_prefersExactHistoryPointOverDifferentLiveFallbackInAutoRaw() {
+        val timestamp = 1_700_000_000_000L
+        val recentPoints = listOf(GlucosePoint(timestamp, 3.3f, 0.6f))
+
+        val snapshot = CurrentDisplaySource.resolveFromLive(
+            liveValueText = null,
+            liveNumericValue = 1.7f,
+            rate = 0f,
+            targetTimeMillis = timestamp,
+            sensorId = "anytime-test",
+            sensorGen = 0,
+            index = 0,
+            source = "callback",
+            recentPoints = recentPoints,
+            viewMode = 2,
+            isMmol = true
+        )
+
+        requireNotNull(snapshot)
+        assertEquals(3.3f, snapshot.primaryValue, 0.001f)
+        assertEquals(0.6f, snapshot.rawValue, 0.001f)
+        requireNotNull(snapshot.secondaryStr)
+    }
 
     @Test
     fun resolveFromLive_usesMatchedHistoryRawInRawPrimaryMode() {
@@ -28,6 +85,28 @@ class CurrentDisplaySourceTests {
         assertEquals(31f, snapshot.rawValue)
         assertEquals(31f, snapshot.primaryValue)
         assertEquals(75f, snapshot.autoValue)
+    }
+
+    @Test
+    fun resolveFromLive_rawPrimaryFallsBackToAutoWhenRawLaneMissing() {
+        val timestamp = 1_700_000_000_000L
+        val snapshot = CurrentDisplaySource.resolveFromLive(
+            liveValueText = null,
+            liveNumericValue = 151f,
+            rate = 0f,
+            targetTimeMillis = timestamp,
+            sensorId = "aidex-raw-missing",
+            sensorGen = 0,
+            index = 0,
+            source = "test",
+            recentPoints = listOf(GlucosePoint(timestamp, 151f, 0f)),
+            viewMode = 1,
+            isMmol = false
+        )
+
+        requireNotNull(snapshot)
+        assertEquals(151f, snapshot.primaryValue, 0.001f)
+        assertEquals(151f, snapshot.autoValue, 0.001f)
     }
 
     @Test

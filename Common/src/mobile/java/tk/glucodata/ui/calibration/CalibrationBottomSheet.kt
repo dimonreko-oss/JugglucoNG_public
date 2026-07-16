@@ -61,10 +61,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import tk.glucodata.GlucosePoint
 import tk.glucodata.R
+import tk.glucodata.SensorIdentity
 import tk.glucodata.data.HistoryRepository
 import tk.glucodata.data.calibration.CalibrationEntity
 import tk.glucodata.data.calibration.CalibrationManager
 import tk.glucodata.logic.TrendEngine
+import tk.glucodata.ui.components.CompactSheetDragHandle
 import tk.glucodata.ui.theme.displayLargeExpressive
 import java.text.SimpleDateFormat
 import java.util.*
@@ -80,6 +82,7 @@ fun CalibrationBottomSheet(
     glucoseHistory: List<GlucosePoint>,
     isMmol: Boolean = true,
     viewMode: Int = 0,
+    sensorId: String,
     onNavigateToHistory: () -> Unit
 ) {
     val view = LocalView.current
@@ -93,7 +96,7 @@ fun CalibrationBottomSheet(
 
     // State
     var editingEntity by remember { mutableStateOf<CalibrationEntity?>(null) }
-    val currentSensor = tk.glucodata.Natives.lastsensorname() ?: ""
+    val currentSensor = SensorIdentity.resolveAppSensorId(sensorId) ?: sensorId
     var selectedTimestamp by remember { mutableLongStateOf(initialTimestamp) }
 
     val nearestHistoryPoint = remember(selectedTimestamp, glucoseHistory) {
@@ -176,7 +179,7 @@ fun CalibrationBottomSheet(
         ?: remember { mutableStateOf(emptyList()) }
     val calibrations = allCalibrations
         .filter { it.isRawMode == isRawMode }
-        .filter { it.sensorId == currentSensor || it.sensorId.isEmpty() }
+        .filter { CalibrationManager.calibrationMatchesSensor(it.sensorId, currentSensor) }
         .sortedByDescending { it.timestamp }
 
     // --- SMART MODE SWITCHING LOGIC ---
@@ -226,9 +229,9 @@ fun CalibrationBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        dragHandle = { BottomSheetDefaults.DragHandle() },
+        dragHandle = { CompactSheetDragHandle() },
         containerColor = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
     ) {
         // Fix for Keyboard Gap:
         // When IME (Keyboard) is visible, we don't need navigationBarsPadding because the IME
@@ -237,25 +240,44 @@ fun CalibrationBottomSheet(
         val density = androidx.compose.ui.platform.LocalDensity.current
         val isImeVisible = WindowInsets.ime.getBottom(density) > 0
 
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-//                // Conditionally apply nav bar padding AND bottom padding only when keyboard is closed
-                .then(if (!isImeVisible) Modifier.navigationBarsPadding().padding(bottom = 12.dp) else Modifier),
-            horizontalAlignment = Alignment.CenterHorizontally
-//                .padding(bottom = 12.dp),
-//            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // --- HEADER ---
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val isCompactSheet = maxHeight < 520.dp || maxWidth < 360.dp
+            val scrollState = rememberScrollState()
+            val horizontalPadding = if (isCompactSheet) 16.dp else 24.dp
+            val headerMinHeight = if (isCompactSheet) 44.dp else 48.dp
+            val headerBottomSpacing = if (isCompactSheet) 8.dp else 12.dp
+            val timeCardPadding = if (isCompactSheet) 12.dp else 16.dp
+            val timeIconSpacing = if (isCompactSheet) 10.dp else 16.dp
+            val timePickerBottomSpacing = if (isCompactSheet) 12.dp else 16.dp
+            val heroBottomSpacing = if (isCompactSheet) 8.dp else 12.dp
+            val statusMinHeight = if (isCompactSheet) 30.dp else 32.dp
+            val actionsTopSpacing = if (isCompactSheet) 14.dp else 24.dp
+            val actionsBottomSpacing = if (isCompactSheet) 12.dp else 24.dp
+            val sheetBottomPadding = if (isCompactSheet) 16.dp else 12.dp
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (isCompactSheet) Modifier.verticalScroll(scrollState) else Modifier)
+                    .padding(horizontal = horizontalPadding)
+                    .then(
+                        if (!isImeVisible) {
+                            Modifier.navigationBarsPadding().padding(bottom = sheetBottomPadding)
+                        } else {
+                            Modifier
+                        }
+                    ),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // --- HEADER ---
             Row(
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = headerMinHeight),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = if (editingEntity != null) stringResource(R.string.edit_calibration_title) else stringResource(R.string.new_calibration_with_mode, modeLabel),
-                    style = MaterialTheme.typography.headlineSmall,
+                    style = if (isCompactSheet) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.onSurface
                 )
 
@@ -304,7 +326,7 @@ fun CalibrationBottomSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(headerBottomSpacing))
 
 
             // --- TIME PICKER ---
@@ -318,7 +340,7 @@ fun CalibrationBottomSheet(
                     .clip(RoundedCornerShape(20.dp))
                     .clickable { isTimeExpanded = !isTimeExpanded }
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Column(modifier = Modifier.padding(timeCardPadding)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -326,7 +348,7 @@ fun CalibrationBottomSheet(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.AccessTime, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.width(16.dp))
+                            Spacer(modifier = Modifier.width(timeIconSpacing))
                             Column {
 //                                Text("Time", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text(
@@ -407,7 +429,7 @@ fun CalibrationBottomSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(timePickerBottomSpacing))
 
             // --- HERO SECTION ---
 
@@ -420,22 +442,23 @@ fun CalibrationBottomSheet(
                 isEditMode = editingEntity != null,
                 hasChanged = hasChanged || editingEntity != null, // Edit mode always shows old → new
                 view = view,
+                compact = isCompactSheet,
                 onValueChange = { newVal, newText ->
                     userValue = newVal
                     textValue = newText
                     hasChanged = true
                 }
             )
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(heroBottomSpacing))
 
-// --- BADGE ---
+            // --- BADGE ---
             val isStable = abs(trendResult.velocity) < 1.0
             val statusColor = if (isStable) Color(0xFF4CAF50) else Color(0xFFFFB300)
 
             Surface(
                 color = statusColor.copy(alpha = 0.1f),
                 shape = RoundedCornerShape(100),
-                modifier = Modifier.height(32.dp)
+                modifier = Modifier.heightIn(min = statusMinHeight)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -459,10 +482,7 @@ fun CalibrationBottomSheet(
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(24.dp))
-
-
-
+            Spacer(modifier = Modifier.height(actionsTopSpacing))
 
             // --- ACTIONS ---
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -506,6 +526,7 @@ fun CalibrationBottomSheet(
                                     sensorValue = selectedAutoValue,
                                     sensorValueRaw = selectedRawValue,
                                     userValue = userValue,
+                                    sensorId = currentSensor,
                                     isRawMode = isRawMode
                                 )
                                 onDismiss()
@@ -520,7 +541,7 @@ fun CalibrationBottomSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(actionsBottomSpacing))
 
             // --- HISTORY ---
             if (calibrations.isNotEmpty()) {
@@ -539,6 +560,7 @@ fun CalibrationBottomSheet(
                     },
                     onSeeAll = onNavigateToHistory
                 )
+            }
             }
         }
     }
@@ -708,11 +730,24 @@ private fun CalibrationHeroSection(
     isEditMode: Boolean,
     hasChanged: Boolean, // True if user has modified the value
     onValueChange: (Float, TextFieldValue) -> Unit,
-    view: android.view.View
+    view: android.view.View,
+    compact: Boolean = false
 ) {
     val fmt = if (isMmol) "%.1f" else "%.0f"
     val originalStr = String.format(Locale.getDefault(), fmt, originalValue)
     val valuesMatch = kotlin.math.abs(userValue - originalValue) < 0.01f
+    val valueButtonSize = if (compact) 56.dp else 64.dp
+    val valueIconSize = if (compact) 28.dp else 32.dp
+    val valueGap = if (compact) 10.dp else 16.dp
+    val valueFontSize = if (compact) 48.sp else 56.sp
+    val valueMinWidth = if (compact) 68.dp else 80.dp
+    val valueMaxWidth = if (compact) 132.dp else 180.dp
+    val originalValueStyle = if (compact) {
+        MaterialTheme.typography.headlineMedium
+    } else {
+        MaterialTheme.typography.headlineLarge
+    }
+    val originalArrowSize = if (compact) 20.dp else 24.dp
     
     // Show dual display when: value has changed AND values don't match
     val showDual = hasChanged && !valuesMatch
@@ -761,7 +796,7 @@ private fun CalibrationHeroSection(
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
                     text = originalStr,
-                    style = MaterialTheme.typography.headlineLarge.copy(
+                    style = originalValueStyle.copy(
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                         fontWeight = FontWeight.Normal,
                         textAlign = TextAlign.Center
@@ -771,7 +806,7 @@ private fun CalibrationHeroSection(
                     Icons.Default.ArrowDownward,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier.size(24.dp).padding(vertical = 4.dp)
+                    modifier = Modifier.size(originalArrowSize).padding(vertical = 4.dp)
                 )
             }
         }
@@ -789,12 +824,12 @@ private fun CalibrationHeroSection(
                     onValueChange(newValue, TextFieldValue(newText, TextRange(newText.length)))
                     view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                 },
-                modifier = Modifier.size(64.dp)
+                modifier = Modifier.size(valueButtonSize)
             ) {
-                Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(32.dp))
+                Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(valueIconSize))
             }
 
-            Spacer(modifier = Modifier.width(16.dp))
+            Spacer(modifier = Modifier.width(valueGap))
             
             // User value input with auto-select on focus
             // Wrap in Box with weight to take available space and center content
@@ -821,14 +856,14 @@ private fun CalibrationHeroSection(
                     },
                     textStyle = MaterialTheme.typography.displayLarge.copy(
                         color = MaterialTheme.colorScheme.primary,
-                        fontSize = 56.sp,
+                        fontSize = valueFontSize,
                         textAlign = TextAlign.Center
                     ),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                     modifier = Modifier
-                        .widthIn(min = 80.dp, max = 180.dp)
+                        .widthIn(min = valueMinWidth, max = valueMaxWidth)
                         .focusRequester(focusRequester)
                         .onFocusChanged { state ->
                             isFocused = state.isFocused
@@ -854,7 +889,7 @@ private fun CalibrationHeroSection(
                 }
             }
 
-            Spacer(modifier = Modifier.width(16.dp))
+            Spacer(modifier = Modifier.width(valueGap))
 
             FilledTonalIconButton(
                 onClick = {
@@ -863,9 +898,9 @@ private fun CalibrationHeroSection(
                     onValueChange(newValue, TextFieldValue(newText, TextRange(newText.length)))
                     view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                 },
-                modifier = Modifier.size(64.dp)
+                modifier = Modifier.size(valueButtonSize)
             ) {
-                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(32.dp))
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(valueIconSize))
             }
         }
     }

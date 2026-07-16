@@ -8,6 +8,8 @@ package tk.glucodata.drivers.anytime
 import tk.glucodata.SensorIdentity
 import tk.glucodata.SuperGattCallback
 import tk.glucodata.drivers.ManagedBluetoothSensorDriver
+import tk.glucodata.drivers.ManagedSensorCalibrationRecord
+import tk.glucodata.drivers.ManagedSensorCalibrationSource
 import tk.glucodata.drivers.ManagedSensorCurrentSnapshot
 import tk.glucodata.drivers.ManagedSensorMaintenanceDriver
 import tk.glucodata.drivers.ManagedSensorUiFamily
@@ -20,6 +22,15 @@ data class AnytimeCurrentSnapshot(
     val rawValue: Float = Float.NaN, // raw Iw current (nA), for diagnostic display
     val rate: Float = Float.NaN,
     val sensorGen: Int = 0,
+)
+
+data class AnytimeReferenceCalibrationRecord(
+    val targetGlucoseId: Int,
+    val referenceMgdlTimes10: Int,
+    val acceptedAtMs: Long = 0L,
+    val appliedGlucoseId: Int = 0,
+    val appliedAtMs: Long = 0L,
+    val outputMgdlTimes10: Int = 0,
 )
 
 interface AnytimeDriver : ManagedBluetoothSensorDriver, ManagedSensorMaintenanceDriver {
@@ -56,6 +67,10 @@ interface AnytimeDriver : ManagedBluetoothSensorDriver, ManagedSensorMaintenance
 
     fun getCurrentSnapshot(maxAgeMillis: Long): AnytimeCurrentSnapshot? = null
 
+    fun getReferenceCalibrationRecords(): List<AnytimeReferenceCalibrationRecord> = emptyList()
+
+    fun getSensorDetailTelemetry(): String = ""
+
     override fun getManagedCurrentSnapshot(maxAgeMillis: Long): ManagedSensorCurrentSnapshot? {
         val snap = getCurrentSnapshot(maxAgeMillis) ?: return null
         return ManagedSensorCurrentSnapshot(
@@ -73,7 +88,8 @@ interface AnytimeDriver : ManagedBluetoothSensorDriver, ManagedSensorMaintenance
 
     fun supportsRawDisplayModes(): Boolean = true
     fun supportsSensorCalibration(): Boolean = true
-    override fun supportsResetAction(): Boolean = true
+    override fun supportsResetAction(): Boolean = false
+    override fun supportsClearCalibrationAction(): Boolean = supportsSensorCalibration()
 
     override fun supportsDisplayModes(): Boolean = supportsRawDisplayModes()
     override fun supportsManualCalibration(): Boolean = supportsSensorCalibration()
@@ -86,6 +102,7 @@ interface AnytimeDriver : ManagedBluetoothSensorDriver, ManagedSensorMaintenance
         val passiveStatus = if (detailedStatus.isBlank()) {
             runCatching { getPassiveConnectionStatus() }.getOrDefault("")
         } else ""
+        val referenceCalibrations = runCatching { getReferenceCalibrationRecords() }.getOrDefault(emptyList())
         return ManagedSensorUiSnapshot(
             serial = sensorSerial,
             displayName = runCatching { callback.mygetDeviceName() }.getOrDefault(sensorSerial),
@@ -106,6 +123,27 @@ interface AnytimeDriver : ManagedBluetoothSensorDriver, ManagedSensorMaintenance
             supportsDisplayModes = supportsDisplayModes(),
             supportsManualCalibration = supportsManualCalibration(),
             supportsHardwareReset = supportsResetAction(),
+            supportsClearCalibration = supportsClearCalibrationAction() && referenceCalibrations.isNotEmpty(),
+            sensorDetailTelemetry = runCatching { getSensorDetailTelemetry() }.getOrDefault(""),
+            vendorCalibrations = referenceCalibrations.map { record ->
+                ManagedSensorCalibrationRecord(
+                    index = record.targetGlucoseId,
+                    referenceGlucoseMgDl = (record.referenceMgdlTimes10 + 5) / 10,
+                    timeOffsetMinutes = 0,
+                    timestampMs = record.acceptedAtMs,
+                    cf = Float.NaN,
+                    offset = Float.NaN,
+                    isValid = record.referenceMgdlTimes10 > 0,
+                    source = ManagedSensorCalibrationSource.ANYTIME,
+                    appliedGlucoseId = record.appliedGlucoseId,
+                    appliedAtMs = record.appliedAtMs,
+                    outputGlucoseMgDl = if (record.outputMgdlTimes10 > 0) {
+                        (record.outputMgdlTimes10 + 5) / 10
+                    } else {
+                        0
+                    },
+                )
+            },
             isVendorConnected = callback.mActiveBluetoothDevice != null,
             isSensorExpired = runCatching { isSensorExpired() }.getOrDefault(false),
             sensorRemainingHours = runCatching { getSensorRemainingHours() }.getOrDefault(-1),
@@ -125,6 +163,7 @@ interface AnytimeDriver : ManagedBluetoothSensorDriver, ManagedSensorMaintenance
     fun getSensorAgeHours(): Int
     fun getReadingIntervalMinutes(): Int
     override fun calibrateSensor(glucoseMgDl: Int): Boolean = pushReferenceBg(glucoseMgDl)
+    override fun clearSensorCalibration(): Boolean = false
 
     val vendorFirmwareVersion: String
     val vendorModelName: String

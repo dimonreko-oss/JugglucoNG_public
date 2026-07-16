@@ -732,6 +732,8 @@ public class Natives {
 
         public static native void addGlucoseStreamWithTemp(long time, float glucose, float temperatureC, String sensorId);
 
+        public static native void addGlucoseStreamWithRawTemp(long time, float glucose, float rawGlucose, float temperatureC, String sensorId);
+
         public static native long ensureSensorShell(String sensorId, long startTimeSec);
 
         public static native void rebaseDirectStreamWindow(String sensorId, long startTimeSec);
@@ -1439,6 +1441,7 @@ public class Natives {
         public static native boolean getAllValues();
 
         public static native void setResetSibionics2(long dataptr, boolean val);
+        public static native void prepareSibionicsHardwareReset(long dataptr);
 
         public static native void setAutoResetDays(long dataptr, int val);
 

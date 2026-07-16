@@ -2,18 +2,18 @@ package tk.glucodata.data
 
 import tk.glucodata.Natives
 import tk.glucodata.ui.GlucosePoint
+import tk.glucodata.BatteryTrace
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.channelFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import android.util.Log
 import android.os.SystemClock
 import tk.glucodata.Applic
-import tk.glucodata.BatteryTrace
 import tk.glucodata.SensorIdentity
 import tk.glucodata.ui.util.inDisplayUnit
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -23,9 +23,9 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
  * New readings are stored in Room for long-term history while still using native data for
  * real-time display and calibration.
  *
- * Multi-sensor: current/live reads stay pinned to the selected sensor. History/chart queries
- * prefer that same sensor's Room history directly; only when no current sensor is known do we
- * fall back to the broader merged display timeline.
+ * Multi-sensor: current/live reads stay pinned to the selected sensor. Dashboard history
+ * queries use that same sensor's Room history directly so the dashboard never switches to a
+ * broad merged timeline just because older data is visible.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class GlucoseRepository {
@@ -39,11 +39,7 @@ class GlucoseRepository {
      * re-subscribe when the main sensor changes.
      */
     private val _currentSerial = MutableStateFlow(
-        SensorIdentity.resolveAvailableMainSensor(
-            selectedMain = SensorIdentity.resolveMainSensor(),
-            preferredSensorId = null,
-            activeSensors = Natives.activeSensors()
-        ) ?: ""
+        SensorIdentity.resolveMainSensor() ?: ""
     )
     val currentSerial = _currentSerial.asStateFlow()
     
@@ -57,11 +53,6 @@ class GlucoseRepository {
             ?.takeIf { it.isNotBlank() }
         val resolved = preferredSerial?.takeIf { it.isNotBlank() }
             ?: nativeCurrent
-            ?: SensorIdentity.resolveAvailableMainSensor(
-                selectedMain = nativeCurrent,
-                preferredSensorId = current.takeIf { it.isNotBlank() },
-                activeSensors = Natives.activeSensors()
-            )
             ?: current.takeIf { it.isNotBlank() }
             ?: ""
 
@@ -70,7 +61,18 @@ class GlucoseRepository {
             _currentSerial.value = resolved
         }
     }
-    
+
+    /**
+     * Fold overlapping imported history into the current real sensor immediately.
+     * Used for the "import after the sensor is already connected" order; the
+     * backfill path handles the opposite order. No-op when there is no current
+     * sensor (nothing to fold into yet).
+     */
+    suspend fun reconcileImportedIntoCurrentSensor() {
+        val serial = SensorIdentity.resolveMainSensor()?.takeIf { it.isNotBlank() } ?: return
+        historyRepository.reconcileImportedIntoSensor(serial)
+    }
+
     companion object {
         private const val TAG = "GlucoseRepo"
         private const val ONE_SHOT_SYNC_MIN_INTERVAL_MS = 5_000L
@@ -191,11 +193,7 @@ class GlucoseRepository {
         if (!preferred.isNullOrBlank()) {
             return preferred
         }
-        return SensorIdentity.resolveAvailableMainSensor(
-            selectedMain = SensorIdentity.resolveMainSensor(),
-            preferredSensorId = null,
-            activeSensors = Natives.activeSensors()
-        )
+        return SensorIdentity.resolveMainSensor()
     }
 
     private suspend fun loadDisplayHistory(
@@ -270,6 +268,17 @@ class GlucoseRepository {
     }
 
     /**
+     * Get the merged display timeline used by History/Stats-style views. This
+     * keeps readable/CSV exports aligned with screen-level history after a
+     * sensor swap instead of narrowing export output to only the active sensor.
+     */
+    suspend fun getMergedHistory(startTime: Long, isMmol: Boolean): List<GlucosePoint> {
+        val preferredSerial = resolveDisplayPreferredSerial()
+        historyRepository.ensureBackfilled(preferredSerial, startTime)
+        return historyRepository.getDisplayHistory(preferredSerial, startTime).inDisplayUnit(isMmol)
+    }
+
+    /**
      * Get history as a Flow for reactive updates.
      * Follows the selected sensor's Room history directly when we know which sensor is
      * active, and only falls back to the merged display timeline when there is no current
@@ -297,6 +306,30 @@ class GlucoseRepository {
         return _currentSerial.flatMapLatest { serial ->
             val preferredSerial = resolveDisplayPreferredSerial(serial)
             channelFlow {
+                launch {
+                    historyRepository.ensureBackfilled(preferredSerial, startTime)
+                }
+                observeDisplayHistory(preferredSerial, startTime).collect { points ->
+                    send(points)
+                }
+            }
+        }
+    }
+
+    /**
+     * Dashboard history follows the selected/current sensor directly. This keeps
+     * the dashboard out of the all-sensor merged timeline while still allowing
+     * date-picker/pan browsing across the full persisted history for that sensor.
+     */
+    fun getDashboardHistoryFlowRaw(startTime: Long): Flow<List<GlucosePoint>> {
+        return _currentSerial.flatMapLatest { serial ->
+            val preferredSerial = resolveDisplayPreferredSerial(serial)
+            channelFlow {
+                if (preferredSerial == null) {
+                    send(emptyList())
+                    return@channelFlow
+                }
+
                 launch {
                     historyRepository.ensureBackfilled(preferredSerial, startTime)
                 }

@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -98,6 +99,11 @@ fun ExpressiveSettingsScreen(
             mqAccountState.hasCredentials ||
             mqAccountState.hasToken ||
             tk.glucodata.drivers.mq.MQRegistry.isCloudSyncEnabled(context)
+    val showOttaiSettings = remember {
+        SensorBluetooth.mygatts().any { callback ->
+            (callback as? tk.glucodata.drivers.ottai.OttaiDriver)?.isUiEnabled() == true
+        }
+    }
 
     // States
     val unit by viewModel.unit.collectAsState()
@@ -107,21 +113,18 @@ fun ExpressiveSettingsScreen(
     val chartSmoothingMinutes by viewModel.chartSmoothingMinutes.collectAsState()
     val dataSmoothingGraphOnly by viewModel.dataSmoothingGraphOnly.collectAsState()
     val dataSmoothingCollapseChunks by viewModel.dataSmoothingCollapseChunks.collectAsState()
+    val dataSmoothingExchangeOnly by viewModel.dataSmoothingExchangeOnly.collectAsState()
     val previewWindowMode by viewModel.previewWindowMode.collectAsState()
     val journalEnabled by viewModel.journalEnabled.collectAsState()
-    val journalInsulinPresets by viewModel.journalInsulinPresets.collectAsState()
     val predictiveSimulationEnabled by viewModel.predictiveSimulationEnabled.collectAsState()
-    val predictionTrendMomentumEnabled by viewModel.predictionTrendMomentumEnabled.collectAsState()
-    val predictionCarbRatioGramsPerUnit by viewModel.predictionCarbRatioGramsPerUnit.collectAsState()
-    val predictionInsulinSensitivityMgDlPerUnit by viewModel.predictionInsulinSensitivityMgDlPerUnit.collectAsState()
-    val predictionCarbAbsorptionGramsPerHour by viewModel.predictionCarbAbsorptionGramsPerHour.collectAsState()
-    val predictionHorizonMinutes by viewModel.predictionHorizonMinutes.collectAsState()
-    val alertsSummary by viewModel.alertsSummary.collectAsState()
+    val alertsMasterEnabled by viewModel.alertsMasterEnabled.collectAsState()
     val viewMode by viewModel.viewMode.collectAsState()
+    val sensorName by viewModel.sensorName.collectAsState()
     val isRawCalibrationMode = viewMode == 1 || viewMode == 3
-    val calibrationEnabledRaw by CalibrationManager.isEnabledForRaw.collectAsState()
-    val calibrationEnabledAuto by CalibrationManager.isEnabledForAuto.collectAsState()
-    val calibrationEnabled = if (isRawCalibrationMode) calibrationEnabledRaw else calibrationEnabledAuto
+    val calibrationRevision by CalibrationManager.revision.collectAsState()
+    val calibrationEnabled = remember(isRawCalibrationMode, sensorName, calibrationRevision) {
+        CalibrationManager.isEnabledForMode(isRawCalibrationMode, sensorName)
+    }
     val calibrationModeLabel = if (isRawCalibrationMode) "Raw" else "Auto"
     
     // Auto-refresh data when screen becomes active (e.g. returning from Alerts screen)
@@ -145,6 +148,8 @@ fun ExpressiveSettingsScreen(
     val graphLowValue by viewModel.graphLow.collectAsState()
     val graphHighValue by viewModel.graphHigh.collectAsState()
     val targetLowValue by viewModel.targetLow.collectAsState()
+    val veryLowThresholdValue by viewModel.veryLowThreshold.collectAsState()
+    val veryHighThresholdValue by viewModel.veryHighThreshold.collectAsState()
     val targetHighValue by viewModel.targetHigh.collectAsState()
 
     // Dialog states
@@ -158,8 +163,8 @@ fun ExpressiveSettingsScreen(
     var isClearing by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
     var pendingSettingsImportUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingExportPackageImportUri by remember { mutableStateOf<Uri?>(null) }
     var glucoseRangeExpanded by rememberSaveable { mutableStateOf(false) }
-    var predictiveSimulationExpanded by rememberSaveable { mutableStateOf(false) }
 
 
 
@@ -181,7 +186,9 @@ fun ExpressiveSettingsScreen(
         val collapseIntervalMinutes = DataSmoothing.collapseIntervalMinutes(chartSmoothingMinutes)
         buildList {
             add(stringResource(R.string.minutes_short_format, chartSmoothingMinutes))
-            if (dataSmoothingGraphOnly) {
+            if (dataSmoothingExchangeOnly) {
+                add(stringResource(R.string.data_smoothing_exchange_only_title))
+            } else if (dataSmoothingGraphOnly) {
                 add(stringResource(R.string.data_smoothing_graph_only_title))
             }
             if (dataSmoothingCollapseChunks) {
@@ -253,11 +260,14 @@ fun ExpressiveSettingsScreen(
                     targetHighValue = targetHighValue,
                     chartLowValue = graphLowValue,
                     chartHighValue = graphHighValue,
+                    veryLowValue = veryLowThresholdValue,
+                    veryHighValue = veryHighThresholdValue,
                     isMmol = isMmol,
                     expanded = glucoseRangeExpanded,
                     onExpandedChange = { glucoseRangeExpanded = it },
                     onTargetRangeChange = { low, high -> viewModel.setTargetRange(low, high) },
                     onChartRangeChange = { low, high -> viewModel.setGraphRange(low, high) },
+                    onVeryRangeChange = { low, high -> viewModel.setVeryLowHighThresholds(low, high) },
                     iconTint = glucoseColor,
                     position = CardPosition.MIDDLE
                 )
@@ -265,7 +275,9 @@ fun ExpressiveSettingsScreen(
                 ManualCalibrationSettingsItem(
                     calibrationEnabled = calibrationEnabled,
                     modeLabel = calibrationModeLabel,
-                    onToggleEnabled = { CalibrationManager.setEnabledForMode(isRawCalibrationMode, it) },
+                    onToggleEnabled = {
+                        CalibrationManager.setEnabledForMode(isRawCalibrationMode, it, sensorName)
+                    },
                     onOpenCalibration = { navController.navigate("settings/calibrations") },
                     iconTint = glucoseColor,
                     position = CardPosition.MIDDLE
@@ -273,30 +285,16 @@ fun ExpressiveSettingsScreen(
 
                 JournalSettingsItem(
                     journalEnabled = journalEnabled,
-                    activePresetCount = journalInsulinPresets.count { !it.isArchived },
                     onToggleEnabled = { viewModel.setJournalEnabled(it) },
                     onOpenJournal = { navController.navigate("settings/journal") },
                     iconTint = glucoseColor,
                     position = CardPosition.MIDDLE
                 )
 
-                PredictiveSimulationExpandableSettingsItem(
-                    journalEnabled = journalEnabled,
+                PredictiveSimulationSettingsItem(
                     predictiveSimulationEnabled = predictiveSimulationEnabled,
-                    trendMomentumEnabled = predictionTrendMomentumEnabled,
-                    carbRatioGramsPerUnit = predictionCarbRatioGramsPerUnit,
-                    insulinSensitivityMgDlPerUnit = predictionInsulinSensitivityMgDlPerUnit,
-                    carbAbsorptionGramsPerHour = predictionCarbAbsorptionGramsPerHour,
-                    horizonMinutes = predictionHorizonMinutes,
-                    isMmol = isMmol,
-                    expanded = predictiveSimulationExpanded,
-                    onExpandedChange = { predictiveSimulationExpanded = it },
-                    onToggleSimulation = { viewModel.setPredictiveSimulationEnabled(it) },
-                    onToggleTrendMomentum = { viewModel.setPredictionTrendMomentumEnabled(it) },
-                    onCarbRatioChange = { viewModel.setPredictionCarbRatioGramsPerUnit(it) },
-                    onInsulinSensitivityChange = { viewModel.setPredictionInsulinSensitivityMgDlPerUnit(it) },
-                    onCarbAbsorptionChange = { viewModel.setPredictionCarbAbsorptionGramsPerHour(it) },
-                    onHorizonChange = { viewModel.setPredictionHorizonMinutes(it) },
+                    onToggleEnabled = { viewModel.setPredictiveSimulationEnabled(it) },
+                    onOpenSettings = { navController.navigate("settings/predictive-simulation") },
                     iconTint = glucoseColor,
                     position = CardPosition.BOTTOM
                 )
@@ -310,14 +308,12 @@ fun ExpressiveSettingsScreen(
             // Theme: Secondary (Accent)
             val notifColor = MaterialTheme.colorScheme.secondary
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                SettingsItem(
-                    title = stringResource(R.string.glucose_alerts_title),
-                    subtitle = alertsSummary,
-                    icon = Icons.Default.AddAlert,
+                AlertsAndAlarmsSettingsItem(
+                    alertsEnabled = alertsMasterEnabled,
+                    onToggleEnabled = { viewModel.setAlertsMasterEnabled(it) },
+                    onOpenSettings = { navController.navigate("settings/alerts") },
                     iconTint = MaterialTheme.colorScheme.error,
-                    showArrow = true,
                     position = CardPosition.TOP,
-                    onClick = { navController.navigate("settings/alerts") }
                 )
 
                 SettingsItem(
@@ -441,6 +437,17 @@ fun ExpressiveSettingsScreen(
                         onClick = { navController.navigate("settings/mq-account") }
                     )
                 }
+                if (showOttaiSettings) {
+                    SettingsItem(
+                        title = stringResource(R.string.ottai_setup_title),
+                        subtitle = stringResource(R.string.ottai_settings_desc),
+                        showArrow = true,
+                        icon = Icons.Default.Sensors,
+                        iconTint = exchangeColor,
+                        position = CardPosition.MIDDLE,
+                        onClick = { navController.navigate("settings/ottai") }
+                    )
+                }
                 SettingsItem(
                     title = stringResource(R.string.watches),
                     subtitle = "WearOS, Watchdrip, GadgetBridge, Kerfstok",
@@ -531,28 +538,6 @@ fun ExpressiveSettingsScreen(
         item(key = "data_group") {
             // Theme: Secondary (Files match notifications/system)
             val dataColor = MaterialTheme.colorScheme.secondary
-            val settingsExportLauncher = rememberLauncherForActivityResult(
-                contract = ActivityResultContracts.CreateDocument("application/json"),
-                onResult = { uri ->
-                    if (uri != null) {
-                        scope.launch {
-                            val result = tk.glucodata.data.SettingsExporter.exportToJson(context, uri)
-                            withContext(Dispatchers.Main) {
-                                val message = if (result.isSuccess) {
-                                    context.getString(R.string.export_successful)
-                                } else {
-                                    context.getString(
-                                        R.string.export_failed_with_error,
-                                        result.exceptionOrNull()?.localizedMessage
-                                            ?: context.getString(R.string.unknown_error)
-                                    )
-                                }
-                                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    }
-                }
-            )
             val importLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.OpenDocument(),
                 onResult = { uri ->
@@ -561,6 +546,10 @@ fun ExpressiveSettingsScreen(
                             if (tk.glucodata.data.SettingsExporter.isSettingsExport(context, uri)) {
                                 withContext(Dispatchers.Main) {
                                     pendingSettingsImportUri = uri
+                                }
+                            } else if (tk.glucodata.data.ExportPackageExporter.isExportPackage(context, uri)) {
+                                withContext(Dispatchers.Main) {
+                                    pendingExportPackageImportUri = uri
                                 }
                             } else {
                                 // Show loading? For now just toast result
@@ -582,24 +571,12 @@ fun ExpressiveSettingsScreen(
             )
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 SettingsItem(
-                    title = stringResource(R.string.export_data),
-                    subtitle = stringResource(R.string.export_data_desc),
+                    title = stringResource(R.string.export_data_settings),
+                    subtitle = stringResource(R.string.export_data_settings_desc),
                     icon = androidx.compose.material.icons.Icons.Default.CloudUpload,
                     iconTint = dataColor,
                     position = CardPosition.TOP,
                     onClick = { showExportDialog = true }
-                )
-                SettingsItem(
-                    title = stringResource(R.string.export_settings),
-                    subtitle = stringResource(R.string.export_settings_desc),
-                    icon = Icons.Default.Settings,
-                    iconTint = dataColor,
-                    position = CardPosition.MIDDLE,
-                    onClick = {
-                        val date = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-                            .format(System.currentTimeMillis())
-                        settingsExportLauncher.launch("Juggluco_Settings_$date.json")
-                    }
                 )
 
                 SettingsItem(
@@ -725,7 +702,7 @@ fun ExpressiveSettingsScreen(
     
     if (showExportDialog) {
         val sheetState = rememberModalBottomSheetState()
-        HistoryExportSheet(
+        ExportDataSettingsSheet(
             onDismiss = { showExportDialog = false },
             sheetState = sheetState
         )
@@ -764,6 +741,58 @@ fun ExpressiveSettingsScreen(
             onDismiss = { pendingSettingsImportUri = null }
         )
     }
+    pendingExportPackageImportUri?.let { uri ->
+        ConfirmActionDialog(
+            title = stringResource(R.string.import_data_settings),
+            message = stringResource(R.string.settings_import_confirm_message),
+            icon = Icons.Default.FolderOpen,
+            onConfirm = {
+                pendingExportPackageImportUri = null
+                scope.launch {
+                    val result = tk.glucodata.data.ExportPackageExporter.importFromJson(context, uri)
+                    withContext(Dispatchers.Main) {
+                        if (result.isSuccess) {
+                            val summary = result.getOrThrow()
+                            Toast.makeText(
+                                context,
+                                if (summary.restartRequired) {
+                                    context.getString(R.string.settings_import_successful)
+                                } else {
+                                    context.getString(
+                                        R.string.imported_readings_count,
+                                        summary.historyReadings
+                                    )
+                                },
+                                Toast.LENGTH_LONG
+                            ).show()
+                            if (summary.historyReadings > 0) {
+                                // Pin the imported serial for display (when idle) so the
+                                // dashboard chart shows the imported glucose. Persisted, so
+                                // it survives the restart below.
+                                viewModel.onHistoryImported(summary.historyDisplaySerial)
+                            } else {
+                                viewModel.refreshData()
+                            }
+                            if (summary.restartRequired) {
+                                context.findActivity()?.fullRestart()
+                            }
+                        } else {
+                            Toast.makeText(
+                                context,
+                                context.getString(
+                                    R.string.import_failed_with_error,
+                                    result.exceptionOrNull()?.localizedMessage
+                                        ?: context.getString(R.string.unknown_error)
+                                ),
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }
+            },
+            onDismiss = { pendingExportPackageImportUri = null }
+        )
+    }
 
     // ... Bottom of function ...
 
@@ -796,11 +825,14 @@ private fun GlucoseRangeExpandableSettingsItem(
     targetHighValue: Float,
     chartLowValue: Float,
     chartHighValue: Float,
+    veryLowValue: Float,
+    veryHighValue: Float,
     isMmol: Boolean,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     onTargetRangeChange: (Float, Float) -> Unit,
     onChartRangeChange: (Float, Float) -> Unit,
+    onVeryRangeChange: (Float, Float) -> Unit,
     iconTint: Color,
     position: CardPosition
 ) {
@@ -809,6 +841,9 @@ private fun GlucoseRangeExpandableSettingsItem(
     val targetHighBounds = if (isMmol) 6.0f..16.0f else 100f..350f
     val chartLowBounds = if (isMmol) 0.0f..12.0f else 0f..216f
     val chartHighBounds = if (isMmol) 4.0f..30.0f else 72f..540f
+    // Same bounds as the very-low/very-high alert editor.
+    val veryLowBounds = if (isMmol) 2.0f..4.0f else 36f..70f
+    val veryHighBounds = if (isMmol) 10.0f..20.0f else 180f..360f
     val normalizedTargetLow = clampLowerRangeValue(
         value = targetLowValue,
         upperValue = targetHighValue,
@@ -853,6 +888,26 @@ private fun GlucoseRangeExpandableSettingsItem(
     var chartHighSlider by remember(chartLowValue, chartHighValue, isMmol) {
         mutableFloatStateOf(normalizedChartHigh)
     }
+    val normalizedVeryLow = clampLowerRangeValue(
+        value = veryLowValue,
+        upperValue = veryHighValue,
+        bounds = veryLowBounds,
+        step = valueStep,
+        isMmol = isMmol
+    )
+    val normalizedVeryHigh = clampUpperRangeValue(
+        value = veryHighValue,
+        lowerValue = normalizedVeryLow,
+        bounds = veryHighBounds,
+        step = valueStep,
+        isMmol = isMmol
+    )
+    var veryLowSlider by remember(veryLowValue, veryHighValue, isMmol) {
+        mutableFloatStateOf(normalizedVeryLow)
+    }
+    var veryHighSlider by remember(veryLowValue, veryHighValue, isMmol) {
+        mutableFloatStateOf(normalizedVeryHigh)
+    }
 
     val targetSummary = remember(targetLowSlider, targetHighSlider, isMmol) {
         formatRangeSummary(targetLowSlider, targetHighSlider, isMmol)
@@ -862,10 +917,15 @@ private fun GlucoseRangeExpandableSettingsItem(
     }
     val targetShortTitle = stringResource(R.string.target_short_title)
     val chartShortTitle = stringResource(R.string.chart_short_title)
+    val veryShortTitle = stringResource(R.string.very_range_short_title)
     val targetTitle = stringResource(R.string.target_range_title)
     val chartTitle = stringResource(R.string.chart_limits_title)
-    val collapsedSummary = remember(targetShortTitle, chartShortTitle, targetSummary, chartSummary) {
-        "$targetShortTitle $targetSummary • $chartShortTitle $chartSummary"
+    val veryTitle = stringResource(R.string.very_range_title)
+    val verySummary = remember(veryLowSlider, veryHighSlider, isMmol) {
+        formatRangeSummary(veryLowSlider, veryHighSlider, isMmol)
+    }
+    val collapsedSummary = remember(targetShortTitle, chartShortTitle, veryShortTitle, targetSummary, chartSummary, verySummary) {
+        "$targetShortTitle $targetSummary • $chartShortTitle $chartSummary • $veryShortTitle $verySummary"
     }
 
     Surface(
@@ -988,6 +1048,43 @@ private fun GlucoseRangeExpandableSettingsItem(
                             },
                             onHighValueChangeFinished = {
                                 onChartRangeChange(chartLowSlider, chartHighSlider)
+                            }
+                        )
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        GlucoseRangeEditorSection(
+                            title = veryTitle,
+                            lowLabel = stringResource(R.string.very_low_label),
+                            highLabel = stringResource(R.string.very_high_label),
+                            lowValue = veryLowSlider,
+                            highValue = veryHighSlider,
+                            lowBounds = veryLowBounds,
+                            highBounds = veryHighBounds,
+                            isMmol = isMmol,
+                            onLowValueChange = { candidate ->
+                                veryLowSlider = clampLowerRangeValue(
+                                    value = candidate,
+                                    upperValue = veryHighSlider,
+                                    bounds = veryLowBounds,
+                                    step = valueStep,
+                                    isMmol = isMmol
+                                )
+                            },
+                            onHighValueChange = { candidate ->
+                                veryHighSlider = clampUpperRangeValue(
+                                    value = candidate,
+                                    lowerValue = veryLowSlider,
+                                    bounds = veryHighBounds,
+                                    step = valueStep,
+                                    isMmol = isMmol
+                                )
+                            },
+                            onLowValueChangeFinished = {
+                                onVeryRangeChange(veryLowSlider, veryHighSlider)
+                            },
+                            onHighValueChangeFinished = {
+                                onVeryRangeChange(veryLowSlider, veryHighSlider)
                             }
                         )
                     }
@@ -1152,7 +1249,6 @@ private fun ManualCalibrationSettingsItem(
 @Composable
 private fun JournalSettingsItem(
     journalEnabled: Boolean,
-    activePresetCount: Int,
     onToggleEnabled: (Boolean) -> Unit,
     onOpenJournal: () -> Unit,
     iconTint: Color,
@@ -1179,11 +1275,7 @@ private fun JournalSettingsItem(
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    text = stringResource(
-                        R.string.journal_settings_summary,
-                        stringResource(if (journalEnabled) R.string.enabled_status else R.string.disabled_status),
-                        activePresetCount
-                    ),
+                    text = stringResource(if (journalEnabled) R.string.enabled_status else R.string.disabled_status),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
@@ -1212,30 +1304,134 @@ private fun JournalSettingsItem(
 }
 
 @Composable
-private fun PredictiveSimulationExpandableSettingsItem(
-    journalEnabled: Boolean,
+private fun PredictiveSimulationSettingsItem(
     predictiveSimulationEnabled: Boolean,
-    trendMomentumEnabled: Boolean,
-    carbRatioGramsPerUnit: Float,
-    insulinSensitivityMgDlPerUnit: Float,
-    carbAbsorptionGramsPerHour: Float,
-    horizonMinutes: Int,
-    isMmol: Boolean,
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
-    onToggleSimulation: (Boolean) -> Unit,
-    onToggleTrendMomentum: (Boolean) -> Unit,
-    onCarbRatioChange: (Float) -> Unit,
-    onInsulinSensitivityChange: (Float) -> Unit,
-    onCarbAbsorptionChange: (Float) -> Unit,
-    onHorizonChange: (Int) -> Unit,
+    onToggleEnabled: (Boolean) -> Unit,
+    onOpenSettings: () -> Unit,
     iconTint: Color,
     position: CardPosition
 ) {
-    val chevronRotation by animateFloatAsState(
-        targetValue = if (expanded) 180f else 0f,
-        label = "predictiveSimulationChevron"
-    )
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = onOpenSettings,
+        shape = cardShape(position),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SettingsLeadingIcon(icon = Icons.AutoMirrored.Filled.ShowChart, tint = iconTint)
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.predictive_simulation_title),
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = stringResource(if (predictiveSimulationEnabled) R.string.enabled_status else R.string.disabled_status),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                VerticalDivider(
+                    modifier = Modifier.height(30.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                StyledSwitch(
+                    checked = predictiveSimulationEnabled,
+                    onCheckedChange = onToggleEnabled
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AlertsAndAlarmsSettingsItem(
+    alertsEnabled: Boolean,
+    onToggleEnabled: (Boolean) -> Unit,
+    onOpenSettings: () -> Unit,
+    iconTint: Color,
+    position: CardPosition
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = onOpenSettings,
+        shape = cardShape(position),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SettingsLeadingIcon(icon = Icons.Default.AddAlert, tint = iconTint)
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.glucose_alerts_title),
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = stringResource(if (alertsEnabled) R.string.global_active else R.string.global_all_alerts_disabled),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                VerticalDivider(
+                    modifier = Modifier.height(30.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                StyledSwitch(
+                    checked = alertsEnabled,
+                    onCheckedChange = onToggleEnabled
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PredictiveSimulationSettingsScreen(
+    navController: NavController,
+    viewModel: DashboardViewModel
+) {
+    val unit by viewModel.unit.collectAsState()
+    val isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit)
+    val journalEnabled by viewModel.journalEnabled.collectAsState()
+    val predictiveSimulationEnabled by viewModel.predictiveSimulationEnabled.collectAsState()
+    val notificationChartPredictionEnabled by viewModel.predictiveSimulationNotificationChartEnabled.collectAsState()
+    val trendMomentumEnabled by viewModel.predictionTrendMomentumEnabled.collectAsState()
+    val carbRatioGramsPerUnit by viewModel.predictionCarbRatioGramsPerUnit.collectAsState()
+    val insulinSensitivityMgDlPerUnit by viewModel.predictionInsulinSensitivityMgDlPerUnit.collectAsState()
+    val carbAbsorptionGramsPerHour by viewModel.predictionCarbAbsorptionGramsPerHour.collectAsState()
+    val horizonMinutes by viewModel.predictionHorizonMinutes.collectAsState()
     val insulinSensitivityDisplay = remember(insulinSensitivityMgDlPerUnit, isMmol) {
         tk.glucodata.ui.util.GlucoseFormatter.displayFromMgDl(insulinSensitivityMgDlPerUnit, isMmol)
     }
@@ -1246,89 +1442,92 @@ private fun PredictiveSimulationExpandableSettingsItem(
     }
     val sensitivityRange = if (isMmol) 0.6f..10f else 10f..180f
 
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = cardShape(position),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh
-    ) {
-        Column {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onExpandedChange(!expanded) }
-                    .padding(horizontal = 16.dp, vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                SettingsLeadingIcon(icon = Icons.AutoMirrored.Filled.ShowChart, tint = iconTint)
-                Spacer(modifier = Modifier.width(12.dp))
+    Scaffold(
+        contentWindowInsets = WindowInsets(0.dp),
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.predictive_simulation_title)) },
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.navigate_back)
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item(key = "master") {
+                MasterSwitchCard(
+                    title = stringResource(R.string.predictive_simulation_title),
+                    subtitle = stringResource(R.string.predictive_simulation_summary),
+                    checked = predictiveSimulationEnabled,
+                    onCheckedChange = { viewModel.setPredictiveSimulationEnabled(it) },
+                    icon = Icons.AutoMirrored.Filled.ShowChart,
+                    iconTint = MaterialTheme.colorScheme.primary
+                )
+            }
 
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.predictive_simulation_title),
-                        style = MaterialTheme.typography.titleMedium
+            item(key = "behavior") {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    SettingsSwitchItem(
+                        title = stringResource(R.string.predictive_trend_momentum),
+                        checked = trendMomentumEnabled,
+                        onCheckedChange = { viewModel.setPredictionTrendMomentumEnabled(it) },
+                        position = CardPosition.TOP,
+                        enabled = predictiveSimulationEnabled
                     )
-                    Text(
-                        modifier = Modifier.padding(top = 2.dp),
-                        text = stringResource(R.string.predictive_simulation_summary),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.ExpandMore,
-                        contentDescription = stringResource(
-                            if (expanded) R.string.collapse_action else R.string.expand_action
-                        ),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.graphicsLayer { rotationZ = chevronRotation }
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    VerticalDivider(
-                        modifier = Modifier.height(30.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    StyledSwitch(
-                        checked = predictiveSimulationEnabled,
-                        onCheckedChange = onToggleSimulation
+                    SettingsSwitchItem(
+                        title = stringResource(R.string.predictive_notification_chart),
+                        subtitle = stringResource(R.string.predictive_notification_chart_summary),
+                        checked = notificationChartPredictionEnabled,
+                        onCheckedChange = { viewModel.setPredictiveSimulationNotificationChartEnabled(it) },
+                        position = CardPosition.BOTTOM,
+                        enabled = predictiveSimulationEnabled
                     )
                 }
             }
 
-            AnimatedVisibility(
-                visible = expanded,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-                    PredictiveSimulationSubToggleRow(
-                        title = stringResource(R.string.predictive_trend_momentum),
-                        checked = trendMomentumEnabled,
+            item(key = "horizon") {
+                PredictiveSimulationSettingsCard(enabled = predictiveSimulationEnabled) {
+                    PredictiveSimulationParameterRow(
+                        title = stringResource(R.string.predictive_forecast_horizon),
+                        valueLabel = stringResource(R.string.predictive_horizon_value, horizonMinutes),
+                        value = horizonMinutes.toFloat(),
+                        valueRange = 30f..360f,
                         enabled = predictiveSimulationEnabled,
-                        onCheckedChange = onToggleTrendMomentum,
-                        modifier = Modifier.padding(vertical = 4.dp)
+                        onValueChange = { viewModel.setPredictionHorizonMinutes(it.roundToInt()) }
                     )
-                    if (journalEnabled) {
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.42f))
-                        Text(
-                            text = stringResource(R.string.predictive_model_tuning),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 14.dp, bottom = 2.dp)
-                        )
+                }
+            }
+
+            if (journalEnabled) {
+                item(key = "model_label") {
+                    SectionLabel(
+                        stringResource(R.string.predictive_model_tuning),
+                        topPadding = 4.dp
+                    )
+                }
+                item(key = "model") {
+                    PredictiveSimulationSettingsCard(enabled = predictiveSimulationEnabled) {
                         PredictiveSimulationParameterRow(
                             title = stringResource(R.string.predictive_carb_ratio),
                             valueLabel = stringResource(R.string.predictive_carb_ratio_value, carbRatioGramsPerUnit),
                             value = carbRatioGramsPerUnit,
                             valueRange = 3f..30f,
                             enabled = predictiveSimulationEnabled,
-                            onValueChange = onCarbRatioChange
+                            onValueChange = { viewModel.setPredictionCarbRatioGramsPerUnit(it) }
                         )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.42f))
                         PredictiveSimulationParameterRow(
                             title = stringResource(R.string.predictive_insulin_sensitivity),
                             valueLabel = sensitivityValue,
@@ -1336,31 +1535,43 @@ private fun PredictiveSimulationExpandableSettingsItem(
                             valueRange = sensitivityRange,
                             enabled = predictiveSimulationEnabled,
                             onValueChange = { displayValue ->
-                                onInsulinSensitivityChange(
+                                viewModel.setPredictionInsulinSensitivityMgDlPerUnit(
                                     if (isMmol) tk.glucodata.ui.util.GlucoseFormatter.mmolToMg(displayValue) else displayValue
                                 )
                             }
                         )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.42f))
                         PredictiveSimulationParameterRow(
                             title = stringResource(R.string.predictive_carb_absorption),
                             valueLabel = stringResource(R.string.predictive_absorption_value, carbAbsorptionGramsPerHour),
                             value = carbAbsorptionGramsPerHour,
                             valueRange = 10f..90f,
                             enabled = predictiveSimulationEnabled,
-                            onValueChange = onCarbAbsorptionChange
+                            onValueChange = { viewModel.setPredictionCarbAbsorptionGramsPerHour(it) }
                         )
                     }
-                    PredictiveSimulationParameterRow(
-                        title = stringResource(R.string.predictive_forecast_horizon),
-                        valueLabel = stringResource(R.string.predictive_horizon_value, horizonMinutes),
-                        value = horizonMinutes.toFloat(),
-                        valueRange = 30f..360f,
-                        enabled = predictiveSimulationEnabled,
-                        onValueChange = { onHorizonChange(it.roundToInt()) }
-                    )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PredictiveSimulationSettingsCard(
+    enabled: Boolean,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (enabled) 1f else 0.66f),
+        shape = cardShape(CardPosition.SINGLE),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            content = content
+        )
     }
 }
 
@@ -1398,35 +1609,6 @@ private fun PredictiveSimulationParameterRow(
             value = value.coerceIn(valueRange.start, valueRange.endInclusive),
             onValueChange = onValueChange,
             valueRange = valueRange,
-            enabled = enabled
-        )
-    }
-}
-
-@Composable
-private fun PredictiveSimulationSubToggleRow(
-    title: String,
-    checked: Boolean,
-    enabled: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .alpha(if (enabled) 1f else 0.5f)
-            .clickable(enabled = enabled) { onCheckedChange(!checked) }
-            .padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.weight(1f)
-        )
-        StyledSwitch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
             enabled = enabled
         )
     }
@@ -1479,7 +1661,7 @@ fun NotificationSettingsSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        dragHandle = { BottomSheetDefaults.DragHandle() },
+        dragHandle = { CompactSheetDragHandle() },
     ) {
         Column(
             modifier = Modifier
@@ -1692,7 +1874,7 @@ fun AODSettingsSheet(onDismiss: () -> Unit, sheetState: SheetState, context: and
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        dragHandle = { BottomSheetDefaults.DragHandle() },
+        dragHandle = { CompactSheetDragHandle() },
     ) {
         Column(
             modifier = Modifier
@@ -1872,7 +2054,6 @@ fun AODSettingsSheet(onDismiss: () -> Unit, sheetState: SheetState, context: and
         }
     }
 }
-
 // Components moved to tk.glucodata.ui.components.SettingsComponents.kt
 
 // ============================================================================
@@ -2029,6 +2210,7 @@ private fun LanguagePickerDialog(onDismiss: () -> Unit) {
         "Portuguese" to "pt",
         "Russian" to "ru",
         "Swedish" to "sv",
+        "Somali" to "so",
         "Turkish" to "tr",
         "Ukrainian" to "uk",
         "Mongolian" to "mn",

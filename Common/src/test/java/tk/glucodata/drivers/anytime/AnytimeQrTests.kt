@@ -9,6 +9,14 @@ import org.junit.Test
 class AnytimeQrTests {
 
     @Test
+    fun matchesCanonicalOrKnownNativeAlias_acceptsNativeSuffixAlias() {
+        assertTrue(AnytimeConstants.matchesCanonicalOrKnownNativeAlias("F0FD4509C7C2", "509C7C2"))
+        assertTrue(AnytimeConstants.matchesCanonicalOrKnownNativeAlias("509C7C2", "F0:FD:45:09:C7:C2"))
+        assertFalse(AnytimeConstants.matchesCanonicalOrKnownNativeAlias("F0FD4509C7C2", "09C7C2"))
+        assertFalse(AnytimeConstants.matchesCanonicalOrKnownNativeAlias("F0FD4509C7C2", "09C7D0"))
+    }
+
+    @Test
     fun parse_acceptsYuwellProductUdiAsMetadataOnly() {
         val parsed = AnytimeQr.parse("0116975124206236112602191728021910CQ6212")
         assertNotNull(parsed)
@@ -71,6 +79,19 @@ class AnytimeQrTests {
         assertEquals(1.06f, parsed.k, 0.0001f)
         assertEquals(1f, parsed.r, 0.0001f)
         assertEquals(0, parsed.voltageFlag)
+    }
+
+    @Test
+    fun parse_acceptsObservedTrailingKrFactoryCode() {
+        val parsed = AnytimeQr.parse("a645210531368109100A4")
+        assertNotNull(parsed)
+        parsed!!
+
+        assertEquals(AnytimeQrCalibration.Format.C, parsed.format)
+        assertTrue(parsed.isFactoryCalibration)
+        assertEquals(1.09f, parsed.k, 0.0001f)
+        assertEquals(1.0f, parsed.r, 0.0001f)
+        assertEquals(1, parsed.voltageFlag)
     }
 
     @Test

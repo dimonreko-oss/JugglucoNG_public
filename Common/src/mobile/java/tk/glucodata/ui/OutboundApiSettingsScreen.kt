@@ -15,10 +15,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -30,12 +33,12 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -68,12 +71,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
@@ -86,6 +91,7 @@ import tk.glucodata.OutboundApi
 import tk.glucodata.OutboundApiSettings
 import tk.glucodata.R
 import tk.glucodata.ui.components.CardPosition
+import tk.glucodata.ui.components.CompactSheetDragHandle
 import tk.glucodata.ui.components.SectionLabel
 import tk.glucodata.ui.components.SettingsItem
 import tk.glucodata.ui.components.StyledSwitch
@@ -206,12 +212,13 @@ fun OutboundApiSettingsScreen(navController: NavController) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 24.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 100.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item("outbound_destinations") {
                 SectionLabel(stringResource(R.string.outbound_api_destinations), topPadding = 0.dp)
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+
                     if (config.destinations.isEmpty()) {
                         EmptyDestinationsCard()
                     } else {
@@ -238,20 +245,17 @@ fun OutboundApiSettingsScreen(navController: NavController) {
                             )
                         }
                     }
-                }
-            }
-
-            item("outbound_add") {
-                FilledTonalButton(
-                    onClick = { showAddSheet = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp)
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = null)
-                    Text(
-                        text = stringResource(R.string.outbound_api_add_destination),
-                        modifier = Modifier.padding(start = 10.dp)
-                    )
+                    FilledTonalButton(
+                        onClick = { showAddSheet = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp)
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = null)
+                        Text(
+                            text = stringResource(R.string.outbound_api_add_destination),
+                            modifier = Modifier.padding(start = 10.dp)
+                        )
+                    }
                 }
             }
 
@@ -552,23 +556,45 @@ private fun DestinationEditor(
         )
     }
 
-    SettingsSubsectionTitle(stringResource(R.string.outbound_api_delivery))
-    OutlinedTextField(
-        value = destination.minIntervalMinutes.toString(),
-        onValueChange = { raw ->
-            onChange(destination.copy(minIntervalMinutes = raw.filter { it.isDigit() }.toIntOrNull() ?: 0))
-        },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-        label = { Text(stringResource(R.string.outbound_api_min_interval)) },
-        supportingText = { Text(stringResource(R.string.outbound_api_min_interval_desc)) },
-        keyboardOptions = KeyboardOptions(
-            keyboardType = KeyboardType.Number,
-            imeAction = ImeAction.Next
-        )
-    )
-    TriggerPicker(destination = destination, onChange = onChange)
+    DeliverySection(destination = destination, onChange = onChange)
+    if (isTelegram) {
+        BubbleRefreshSection(destination = destination, onChange = onChange)
+    }
     TemplateEditor(destination = destination, onChange = onChange)
+}
+
+@Composable
+private fun DeliverySection(
+    destination: OutboundApiSettings.Destination,
+    onChange: (OutboundApiSettings.Destination) -> Unit
+) {
+    SettingsSubsectionTitle(stringResource(R.string.outbound_api_delivery))
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = cardShape(CardPosition.SINGLE, radius = 16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedTextField(
+                value = destination.minIntervalMinutes.toString(),
+                onValueChange = { raw ->
+                    onChange(destination.copy(minIntervalMinutes = raw.filter { it.isDigit() }.toIntOrNull() ?: 0))
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text(stringResource(R.string.outbound_api_min_interval)) },
+                supportingText = { Text(stringResource(R.string.outbound_api_min_interval_desc)) },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number,
+                    imeAction = ImeAction.Next
+                )
+            )
+            TriggerPicker(destination = destination, onChange = onChange)
+        }
+    }
 }
 
 @Composable
@@ -619,7 +645,11 @@ private fun TriggerPicker(
     }
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 64.dp)
+            .clickable { showSheet = true }
+            .padding(horizontal = 2.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -657,7 +687,7 @@ private fun TriggerEditorSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        dragHandle = { BottomSheetDefaults.DragHandle() }
+        dragHandle = { CompactSheetDragHandle() }
     ) {
         Column(
             modifier = Modifier
@@ -724,6 +754,203 @@ private fun TriggerEditorSheet(
                     imeAction = ImeAction.Done
                 )
             )
+        }
+    }
+}
+
+@Composable
+private fun BubbleRefreshSection(
+    destination: OutboundApiSettings.Destination,
+    onChange: (OutboundApiSettings.Destination) -> Unit
+) {
+    SettingsSubsectionTitle(stringResource(R.string.outbound_api_bubble_title))
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = cardShape(CardPosition.SINGLE, radius = 18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+        ) {
+            ToggleRow(
+                title = stringResource(R.string.outbound_api_bubble_refresh_title),
+                subtitle = stringResource(R.string.outbound_api_bubble_refresh_desc),
+                checked = destination.refreshInPlaceEnabled,
+                onCheckedChange = { checked ->
+                    onChange(destination.copy(refreshInPlaceEnabled = checked))
+                }
+            )
+            if (destination.refreshInPlaceEnabled) {
+                ControlDivider()
+                NumberStepper(
+                    label = stringResource(R.string.outbound_api_bubble_refresh_window),
+                    value = destination.refreshWindowMinutes,
+                    range = 1..60,
+                    onChange = { onChange(destination.copy(refreshWindowMinutes = it)) }
+                )
+            }
+            ControlDivider()
+            ToggleRow(
+                title = stringResource(R.string.outbound_api_bubble_suppress_title),
+                subtitle = stringResource(R.string.outbound_api_bubble_suppress_desc),
+                checked = destination.suppressDeltaBelowMgdl > 0,
+                onCheckedChange = { checked ->
+                    onChange(
+                        destination.copy(
+                            suppressDeltaBelowMgdl = if (checked) {
+                                OutboundApiSettings.DEFAULT_SUPPRESS_DELTA_BELOW_MGDL
+                            } else 0
+                        )
+                    )
+                }
+            )
+            ControlDivider()
+            ToggleRow(
+                title = stringResource(R.string.outbound_api_bubble_stale_title),
+                subtitle = stringResource(R.string.outbound_api_bubble_stale_desc),
+                checked = destination.staleEnabled,
+                onCheckedChange = { checked ->
+                    onChange(destination.copy(staleEnabled = checked))
+                }
+            )
+            if (destination.staleEnabled) {
+                ControlDivider()
+                NumberStepper(
+                    label = stringResource(R.string.outbound_api_bubble_stale_threshold),
+                    value = destination.staleThresholdMinutes,
+                    range = 1..120,
+                    onChange = { stale ->
+                        val missed = if (destination.missedThresholdMinutes <= stale) stale + 1
+                        else destination.missedThresholdMinutes
+                        onChange(
+                            destination.copy(
+                                staleThresholdMinutes = stale,
+                                missedThresholdMinutes = missed
+                            )
+                        )
+                    }
+                )
+                ControlDivider()
+                NumberStepper(
+                    label = stringResource(R.string.outbound_api_bubble_missed_threshold),
+                    value = destination.missedThresholdMinutes,
+                    range = (destination.staleThresholdMinutes + 1)..240,
+                    onChange = { onChange(destination.copy(missedThresholdMinutes = it)) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ControlDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(horizontal = 16.dp),
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.38f)
+    )
+}
+
+@Composable
+private fun ToggleRow(
+    title: String,
+    subtitle: String?,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = if (subtitle.isNullOrBlank()) 64.dp else 88.dp)
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = onCheckedChange
+            )
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        StyledSwitch(
+            checked = checked,
+            onCheckedChange = null
+        )
+    }
+}
+
+@Composable
+private fun NumberStepper(
+    label: String,
+    value: Int,
+    range: IntRange,
+    onChange: (Int) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 72.dp)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        Surface(
+            shape = cardShape(CardPosition.SINGLE, radius = 24.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHighest
+        ) {
+            Row(
+                modifier = Modifier.height(48.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { onChange((value - 1).coerceAtLeast(range.first)) },
+                    enabled = value > range.first,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Remove,
+                        contentDescription = stringResource(R.string.outbound_api_decrease_value)
+                    )
+                }
+                Text(
+                    text = value.toString(),
+                    modifier = Modifier.widthIn(min = 34.dp),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                IconButton(
+                    onClick = { onChange((value + 1).coerceAtMost(range.last)) },
+                    enabled = value < range.last,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = stringResource(R.string.outbound_api_increase_value)
+                    )
+                }
+            }
         }
     }
 }
@@ -886,7 +1113,7 @@ private fun PresetPickerSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        dragHandle = { BottomSheetDefaults.DragHandle() }
+        dragHandle = { CompactSheetDragHandle() }
     ) {
         Column(
             modifier = Modifier
@@ -1074,6 +1301,10 @@ private val templateTokens = listOf(
     "{time}",
     "{mgdl}",
     "{mmol}",
+    "{auto}",
+    "{auto_value}",
+    "{auto_mgdl}",
+    "{auto_mmol}",
     "{raw}",
     "{raw_mgdl}",
     "{raw_mmol}",
@@ -1085,5 +1316,9 @@ private val templateTokens = listOf(
     "{iob}",
     "{journal_iob}",
     "{cob}",
-    "{journal}"
+    "{journal_cob}",
+    "{journal_events}",
+    "{journal}",
+    "{status}",
+    "{status_emoji}"
 )

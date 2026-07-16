@@ -7,15 +7,19 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -30,13 +34,16 @@ import androidx.compose.material.icons.filled.Vaccines
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -53,6 +60,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -60,6 +68,7 @@ import tk.glucodata.R
 import tk.glucodata.UiRefreshBus
 import tk.glucodata.data.journal.JournalEntry
 import tk.glucodata.data.journal.JournalEntryType
+import tk.glucodata.data.journal.JournalFood
 import tk.glucodata.data.journal.JournalInsulinPreset
 import tk.glucodata.ui.journal.buildJournalChartMarkers
 import tk.glucodata.ui.journal.journalTypeColor
@@ -359,8 +368,10 @@ fun HistoryBrowseScreen(
     title: String,
     browseMode: TimelineBrowseMode = TimelineBrowseMode.HISTORY,
     journalEnabled: Boolean = false,
+    chartRangeColors: Boolean = false,
     journalEntries: List<JournalEntry> = emptyList(),
     journalInsulinPresets: List<JournalInsulinPreset> = emptyList(),
+    journalFoods: List<JournalFood> = emptyList(),
     onBack: (() -> Unit)? = null,
     onPointClick: ((GlucosePoint) -> Unit)? = null,
     onDeleteReading: ((GlucosePoint) -> Unit)? = null,
@@ -372,11 +383,16 @@ fun HistoryBrowseScreen(
     val coroutineScope = rememberCoroutineScope()
     val sortedHistory = remember(glucoseHistory) { glucoseHistory.sortedBy { it.timestamp } }
     val journalPresetsById = remember(journalInsulinPresets) { journalInsulinPresets.associateBy { it.id } }
+    val journalFoodsById = remember(journalFoods) { journalFoods.associateBy { it.id } }
     val availableRange = remember(sortedHistory, journalEntries) {
         resolveAvailableTimelineRange(sortedHistory, journalEntries)
     }
 
-    var selectedHistoryRange by rememberSaveable { mutableStateOf<StatsTimeRange?>(StatsTimeRange.DAY_30) }
+    var selectedHistoryRange by rememberSaveable(browseMode) {
+        mutableStateOf<StatsTimeRange?>(
+            if (browseMode == TimelineBrowseMode.JOURNAL) StatsTimeRange.DAY_7 else StatsTimeRange.DAY_30
+        )
+    }
     var customRangeStartMillis by rememberSaveable { mutableStateOf<Long?>(null) }
     var customRangeEndMillis by rememberSaveable { mutableStateOf<Long?>(null) }
     var selectedChartRange by rememberSaveable { mutableStateOf(TimeRange.H24) }
@@ -448,8 +464,8 @@ fun HistoryBrowseScreen(
         )
     }
     val visibleSections = remember(visibleTimelineRows) { buildHistorySections(visibleTimelineRows) }
-    val journalMarkers = remember(filteredJournalEntries, journalPresetsById, unit, activeHistory) {
-        buildJournalChartMarkers(filteredJournalEntries, journalPresetsById, unit, activeHistory)
+    val journalMarkers = remember(filteredJournalEntries, journalPresetsById, journalFoodsById, unit, activeHistory) {
+        buildJournalChartMarkers(filteredJournalEntries, journalPresetsById, unit, activeHistory, journalFoodsById)
     }
     val journalEntriesById = remember(filteredJournalEntries) { filteredJournalEntries.associateBy { it.id } }
 
@@ -581,8 +597,6 @@ fun HistoryBrowseScreen(
                 }
             }
 
-
-
             if (activeHistory.isNotEmpty()) {
                 item(key = "history-chart") {
                     Box(modifier = Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp)) {
@@ -590,6 +604,7 @@ fun HistoryBrowseScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(420.dp),
+                            appChartRangeColors = chartRangeColors,
                             glucoseHistory = activeHistory,
                             journalMarkers = journalMarkers,
                             graphSmoothingMinutes = graphSmoothingMinutes,
@@ -741,12 +756,7 @@ fun HistoryBrowseScreen(
                                 sensorId = sensorId,
                                 calibrations = calibrations,
                                 highlightLeadRow = false,
-                                journalEntries = item.journalEntries,
-                                journalPresetsById = journalPresetsById,
-                                journalChipExpanded = true,
-                                onJournalEntryClick = onJournalEntryClick,
                                 showLeadingAction = journalEnabled && onAddJournalEntry != null,
-                                leadingActionEmphasis = 0.42f,
                                 onLeadingActionClick = if (journalEnabled && onAddJournalEntry != null) {
                                     {
                                         onAddJournalEntry(
@@ -773,6 +783,7 @@ fun HistoryBrowseScreen(
                                 unit = unit,
                                 journalEntries = item.journalEntries,
                                 journalPresetsById = journalPresetsById,
+                                journalFoodsById = journalFoodsById,
                                 onJournalEntryClick = onJournalEntryClick,
                                 onAddJournalEntry = if (journalEnabled && onAddJournalEntry != null) {
                                     {

@@ -16,13 +16,23 @@ import tk.glucodata.UiRefreshBus
 object VirtualGlucoseSensorBridge {
     private const val TAG = "VirtualGlucose"
     private const val MMOL_TO_MGDL = 18.0182f
+    private const val MIN_REASONABLE_TIMESTAMP_MS = 946_684_800_000L
+    private const val MAX_FUTURE_TIMESTAMP_DRIFT_MS = 10L * 60L * 1000L
 
     data class Reading(
         val timestampMs: Long,
         val glucoseMgdl: Float,
+        val autoMgdl: Float = Float.NaN,
+        val calibratedMgdl: Float = Float.NaN,
         val rawMgdl: Float = Float.NaN,
         val rate: Float = Float.NaN,
-    )
+    ) {
+        val storageGlucoseMgdl: Float
+            get() = autoMgdl.takeIf { it.isFinite() && it > 0f } ?: glucoseMgdl
+
+        val primaryGlucoseMgdl: Float
+            get() = calibratedMgdl.takeIf { it.isFinite() && it > 0f } ?: glucoseMgdl
+    }
 
     @JvmStatic
     fun importHistory(
@@ -33,10 +43,17 @@ object VirtualGlucoseSensorBridge {
         nearDuplicateWindowMs: Long = 0L,
     ): Int {
         if (sensorSerial.isBlank() || readings.isEmpty()) return 0
+        val nowMs = System.currentTimeMillis()
+        val validReadings = readings.filter { isUsableHistoryReading(it, nowMs) }
+        val skippedInvalid = readings.size - validReadings.size
+        if (skippedInvalid > 0) {
+            Log.w(TAG, "Skipped $skippedInvalid invalid $logLabel history points for $sensorSerial")
+        }
+        if (validReadings.isEmpty()) return 0
         val latestRoomTimestamp = if (backfill) 0L else HistorySyncAccess.getLatestTimestampForSensor(sensorSerial)
         val existingTimestamps = if (nearDuplicateWindowMs > 0L) {
-            val minTimestamp = readings.minOf { it.timestampMs }
-            val maxTimestamp = readings.maxOf { it.timestampMs }
+            val minTimestamp = validReadings.minOf { it.timestampMs }
+            val maxTimestamp = validReadings.maxOf { it.timestampMs }
             HistorySyncAccess.getHistoryTimestampsForSensor(
                 sensorSerial = sensorSerial,
                 startTime = (minTimestamp - nearDuplicateWindowMs).coerceAtLeast(1L),
@@ -46,16 +63,15 @@ object VirtualGlucoseSensorBridge {
             LongArray(0)
         }
         val deduped = LinkedHashMap<Long, Reading>()
-        readings
+        validReadings
             .asSequence()
             .filter { it.timestampMs > latestRoomTimestamp }
-            .filter { it.glucoseMgdl.isFinite() && it.glucoseMgdl > 0f }
             .filterNot {
                 existingTimestamps.isNotEmpty() &&
                     hasNearbyTimestamp(existingTimestamps, it.timestampMs, nearDuplicateWindowMs)
             }
             .forEach { deduped[it.timestampMs] = it }
-        val skippedAsNearDuplicate = readings.size - deduped.size
+        val skippedAsNearDuplicate = validReadings.size - deduped.size
         if (skippedAsNearDuplicate > 0 && nearDuplicateWindowMs > 0L) {
             Log.i(
                 TAG,
@@ -70,7 +86,7 @@ object VirtualGlucoseSensorBridge {
         val rawValues = FloatArray(ordered.size)
         ordered.forEachIndexed { index, reading ->
             timestamps[index] = reading.timestampMs
-            values[index] = reading.glucoseMgdl
+            values[index] = reading.storageGlucoseMgdl
             rawValues[index] = reading.rawMgdl.takeIf { it.isFinite() && it > 0f } ?: Float.NaN
         }
         if (!HistorySyncAccess.storeSensorHistoryBatchBlocking(sensorSerial, timestamps, values, rawValues)) {
@@ -87,6 +103,20 @@ object VirtualGlucoseSensorBridge {
             ),
         )
         return ordered.size
+    }
+
+    @JvmStatic
+    fun pruneFutureHistory(
+        sensorSerial: String,
+        logLabel: String = "virtual",
+    ): Int {
+        if (sensorSerial.isBlank()) return 0
+        val cutoff = System.currentTimeMillis() + MAX_FUTURE_TIMESTAMP_DRIFT_MS
+        val removed = HistorySyncAccess.deleteReadingsForSensorAfter(sensorSerial, cutoff)
+        if (removed > 0) {
+            Log.w(TAG, "Removed $removed future $logLabel history rows for $sensorSerial after $cutoff")
+        }
+        return removed
     }
 
     private fun hasNearbyTimestamp(
@@ -123,22 +153,26 @@ object VirtualGlucoseSensorBridge {
         logLabel: String = "virtual",
     ) {
         if (sensorSerial.isBlank()) return
-        if (reading.timestampMs <= 0L || !reading.glucoseMgdl.isFinite() || reading.glucoseMgdl <= 0f) return
+        if (!isUsableCurrentReading(reading, System.currentTimeMillis())) {
+            Log.w(TAG, "Ignored invalid $logLabel current for $sensorSerial at ${reading.timestampMs}")
+            return
+        }
 
         val rawMgdl = reading.rawMgdl.takeIf { it.isFinite() && it > 0f } ?: 0f
         val rate = reading.rate.takeIf { it.isFinite() } ?: 0f
         HistorySyncAccess.storeCurrentReadingAsync(
             reading.timestampMs,
-            reading.glucoseMgdl,
+            reading.storageGlucoseMgdl,
             rawMgdl,
             rate,
             sensorSerial,
         )
 
+        val primaryMgdl = reading.primaryGlucoseMgdl
         val glucoseDisplay = if (Applic.unit == 1) {
-            reading.glucoseMgdl / MMOL_TO_MGDL
+            primaryMgdl / MMOL_TO_MGDL
         } else {
-            reading.glucoseMgdl
+            primaryMgdl
         }
         SuperGattCallback.processExternalCurrentReading(
             sensorSerial,
@@ -154,10 +188,25 @@ object VirtualGlucoseSensorBridge {
                 "Published %s current for %s: %.1f mg/dL at %d",
                 logLabel,
                 sensorSerial,
-                reading.glucoseMgdl,
+                primaryMgdl,
                 reading.timestampMs,
             ),
         )
         UiRefreshBus.requestDataRefresh()
     }
+
+    private fun isUsableCurrentReading(reading: Reading, nowMs: Long): Boolean =
+        isPlausibleTimestamp(reading.timestampMs, nowMs) &&
+            reading.storageGlucoseMgdl.isFinite() &&
+            reading.storageGlucoseMgdl > 0f
+
+    private fun isUsableHistoryReading(reading: Reading, nowMs: Long): Boolean =
+        isPlausibleTimestamp(reading.timestampMs, nowMs) &&
+            (
+                (reading.storageGlucoseMgdl.isFinite() && reading.storageGlucoseMgdl > 0f) ||
+                    (reading.rawMgdl.isFinite() && reading.rawMgdl > 0f)
+            )
+
+    private fun isPlausibleTimestamp(timestampMs: Long, nowMs: Long): Boolean =
+        timestampMs in MIN_REASONABLE_TIMESTAMP_MS..(nowMs + MAX_FUTURE_TIMESTAMP_DRIFT_MS)
 }

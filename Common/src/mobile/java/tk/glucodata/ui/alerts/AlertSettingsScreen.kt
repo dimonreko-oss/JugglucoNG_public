@@ -8,15 +8,17 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -35,11 +37,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -50,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import tk.glucodata.Applic
+import tk.glucodata.GlucoseRangeColors
 import tk.glucodata.Notify
 import tk.glucodata.R
 import tk.glucodata.alerts.*
@@ -87,6 +90,9 @@ fun AlertSettingsScreen(
         customAlerts = CustomAlertRepository.getAll()
     }
     fun saveCustomAlerts(updatedAlerts: List<CustomAlertConfig>) {
+        if (updatedAlerts == customAlerts) {
+            return
+        }
         CustomAlertRepository.saveAll(updatedAlerts)
         customAlerts = updatedAlerts
     }
@@ -99,6 +105,14 @@ fun AlertSettingsScreen(
     }
     fun removeCustomAlert(alertId: String) {
         saveCustomAlerts(customAlerts.filterNot { it.id == alertId })
+    }
+
+    fun persistConfigIfChanged(updated: AlertConfig) {
+        if (configs[updated.type] == updated) {
+            return
+        }
+        configs[updated.type] = updated
+        AlertRepository.saveConfig(updated)
     }
 
     // Dialog States
@@ -165,6 +179,13 @@ fun AlertSettingsScreen(
     var expandedType by remember { mutableStateOf<AlertType?>(null) }
     // Track sound picker state (Generic: Current URI + AlertTypeId + Callback)
     var soundPickerRequest by remember { mutableStateOf<Triple<String?, Int, (String?) -> Unit>?>(null) }
+    var notificationDismissAction by remember {
+        mutableStateOf(AlertRepository.loadNotificationDismissAction())
+    }
+    fun persistNotificationDismissAction(action: AlertNotificationDismissAction) {
+        notificationDismissAction = action
+        AlertRepository.saveNotificationDismissAction(action)
+    }
 
     Scaffold(
         topBar = {
@@ -189,52 +210,45 @@ fun AlertSettingsScreen(
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             // === GLOBAL ALERTS SECTION ===
-            item {
+            item(key = "global-alerts") {
                 GlobalAlertSettingsCard(
                     allConfigs = configs,
                     hasCustomAlertsEnabled = customAlerts.any { it.enabled },
                     onMasterToggle = { enabled ->
-                         // Update ALL configs to enabled/disabled
-                         configs.forEach { (type, config) ->
-                             val updated = config.copy(enabled = enabled)
-                             configs[type] = updated
-                             AlertRepository.saveConfig(updated)
-                         }
-                         // Also update Custom Alerts
-                         saveCustomAlerts(customAlerts.map { alert -> alert.copy(enabled = enabled) })
+                        configs.values.toList().forEach { config ->
+                            persistConfigIfChanged(config.copy(enabled = enabled))
+                        }
+                        saveCustomAlerts(customAlerts.map { alert -> alert.copy(enabled = enabled) })
                     },
                     onApplyToAll = { draft ->
-                        // Apply draft settings to ALL configs
-                        configs.forEach { (type, config) ->
-                             val updated = config.copy(
-                                  soundEnabled = draft.soundEnabled,
-                                  vibrationEnabled = draft.vibrationEnabled,
-                                  flashEnabled = draft.flashEnabled,
-                                  deliveryMode = draft.deliveryMode,
-                                  hapticProfile = draft.hapticProfile,
-                                  customSoundUri = draft.customSoundUri,
-                                  overrideDND = draft.overrideDND,
-                                  alarmDurationSeconds = draft.alarmDurationSeconds,
-                                  timeRangeEnabled = draft.timeRangeEnabled,
-                                  activeStartHour = draft.activeStartHour,
-                                  activeStartMinute = draft.activeStartMinute,
-                                  activeEndHour = draft.activeEndHour,
-                                  activeEndMinute = draft.activeEndMinute,
-                                  retryEnabled = draft.retryEnabled,
-                                  retryIntervalMinutes = draft.retryIntervalMinutes,
-                                  retryCount = draft.retryCount,
-                                  defaultSnoozeMinutes = draft.defaultSnoozeMinutes
-                             )
-                             configs[type] = updated
-                             AlertRepository.saveConfig(updated)
+                        configs.values.toList().forEach { config ->
+                            val updated = config.copy(
+                                soundEnabled = draft.soundEnabled,
+                                vibrationEnabled = draft.vibrationEnabled,
+                                flashEnabled = draft.flashEnabled,
+                                deliveryMode = draft.deliveryMode,
+                                hapticProfile = draft.hapticProfile,
+                                customSoundUri = draft.customSoundUri,
+                                overrideDND = draft.overrideDND,
+                                alarmDurationSeconds = draft.alarmDurationSeconds,
+                                timeRangeEnabled = draft.timeRangeEnabled,
+                                activeStartHour = draft.activeStartHour,
+                                activeStartMinute = draft.activeStartMinute,
+                                activeEndHour = draft.activeEndHour,
+                                activeEndMinute = draft.activeEndMinute,
+                                retryEnabled = draft.retryEnabled,
+                                retryIntervalMinutes = draft.retryIntervalMinutes,
+                                retryCount = draft.retryCount,
+                                defaultSnoozeMinutes = draft.defaultSnoozeMinutes
+                            )
+                            persistConfigIfChanged(updated)
                         }
-                        // Also apply to Custom Alerts
                         val updatedCustomAlerts = customAlerts.map { alert ->
                             alert.copy(
                                 sound = draft.soundEnabled,
                                 vibrate = draft.vibrationEnabled,
                                 flash = draft.flashEnabled,
-                                style = when(draft.deliveryMode) {
+                                style = when (draft.deliveryMode) {
                                     AlertDeliveryMode.NOTIFICATION_ONLY -> "notification"
                                     AlertDeliveryMode.SYSTEM_ALARM -> "alarm"
                                     AlertDeliveryMode.BOTH -> "both"
@@ -263,7 +277,7 @@ fun AlertSettingsScreen(
             }
 
             // === HIGH ALERTS SECTION ===
-            item {
+            item(key = "high-alerts-header") {
                 SectionHeader(
                     title = stringResource(R.string.high_alerts_title),
                     icon = Icons.AutoMirrored.Filled.TrendingUp // Using TrendingUp for Highs
@@ -273,11 +287,6 @@ fun AlertSettingsScreen(
             // Standard High Alerts
             items(highAlerts, key = { it.name }) { type ->
                 val config = configs[type] ?: return@items
-                val index = highAlerts.indexOf(type)
-                val isFirst = index == 0
-                val isLast = index == highAlerts.lastIndex
-                
-                // Position logic: Standard alerts form their own group
                 val position = getCardPosition(type, highAlerts)
 
                 AlertCard(
@@ -286,20 +295,15 @@ fun AlertSettingsScreen(
                     isExpanded = expandedType == type,
                     position = position,
                     onToggle = { enabled ->
-                        val updated = config.copy(enabled = enabled)
-                        configs[type] = updated
-                        AlertRepository.saveConfig(updated)
+                        persistConfigIfChanged(config.copy(enabled = enabled))
                     },
                     onExpand = { expandedType = if (expandedType == type) null else type },
                     onConfigChange = { updated ->
-                        configs[type] = updated
-                        AlertRepository.saveConfig(updated)
+                        persistConfigIfChanged(updated)
                     },
                     onPickSound = {
                         soundPickerRequest = Triple(config.customSoundUri, config.type.id) { uri ->
-                            val updated = config.copy(customSoundUri = uri)
-                            configs[type] = updated
-                            AlertRepository.saveConfig(updated)
+                            persistConfigIfChanged(config.copy(customSoundUri = uri))
                             soundPickerRequest = null
                         }
                     }
@@ -308,15 +312,10 @@ fun AlertSettingsScreen(
 
             // Custom High Alerts
             if (customHighs.isNotEmpty()) {
-                item { Spacer(Modifier.height(4.dp)) }
-            
+                item(key = "custom-highs-spacer") { Spacer(Modifier.height(4.dp)) }
+
                 items(customHighs, key = { it.id }) { alert ->
                     var isExpanded by remember { mutableStateOf(false) }
-                    val index = customHighs.indexOf(alert)
-                    val isFirst = index == 0
-                    val isLast = index == customHighs.lastIndex
-                    
-                    // Position logic: Custom alerts form their own group
                     val position = getCardPosition(alert, customHighs)
                     
                     CustomAlertCard(
@@ -346,7 +345,7 @@ fun AlertSettingsScreen(
             }
 
             // Add High Alert Button
-            item {
+            item(key = "add-high-alert") {
                 AddCustomAlertButton(
                     text = stringResource(R.string.add_high_alert),
                     onClick = { createDefaultCustomAlert(CustomAlertType.HIGH) }
@@ -354,7 +353,7 @@ fun AlertSettingsScreen(
             }
 
             // === LOW ALERTS SECTION ===
-            item {
+            item(key = "low-alerts-header") {
                 Spacer(Modifier.height(8.dp))
                 SectionHeader(
                     title = stringResource(R.string.low_alerts_title),
@@ -365,11 +364,6 @@ fun AlertSettingsScreen(
             // Standard Low Alerts
             items(lowAlerts, key = { it.name }) { type ->
                 val config = configs[type] ?: return@items
-                val index = lowAlerts.indexOf(type)
-                val isFirst = index == 0
-                val isLast = index == lowAlerts.lastIndex
-                
-                // Position logic: Standard alerts form their own group
                 val position = getCardPosition(type, lowAlerts)
 
                 AlertCard(
@@ -378,20 +372,15 @@ fun AlertSettingsScreen(
                     isExpanded = expandedType == type,
                     position = position,
                     onToggle = { enabled ->
-                        val updated = config.copy(enabled = enabled)
-                        configs[type] = updated
-                        AlertRepository.saveConfig(updated)
+                        persistConfigIfChanged(config.copy(enabled = enabled))
                     },
                     onExpand = { expandedType = if (expandedType == type) null else type },
                     onConfigChange = { updated ->
-                        configs[type] = updated
-                        AlertRepository.saveConfig(updated)
+                        persistConfigIfChanged(updated)
                     },
                     onPickSound = {
                         soundPickerRequest = Triple(config.customSoundUri, config.type.id) { uri ->
-                            val updated = config.copy(customSoundUri = uri)
-                            configs[type] = updated
-                            AlertRepository.saveConfig(updated)
+                            persistConfigIfChanged(config.copy(customSoundUri = uri))
                             soundPickerRequest = null
                         }
                     }
@@ -400,15 +389,10 @@ fun AlertSettingsScreen(
 
             // Custom Low Alerts
             if (customLows.isNotEmpty()) {
-                item { Spacer(Modifier.height(4.dp)) }
+                item(key = "custom-lows-spacer") { Spacer(Modifier.height(4.dp)) }
 
                 items(customLows, key = { it.id }) { alert ->
                     var isExpanded by remember { mutableStateOf(false) }
-                    val index = customLows.indexOf(alert)
-                    val isFirst = index == 0
-                    val isLast = index == customLows.lastIndex
-                    
-                    // Position logic: Custom alerts form their own group
                     val position = getCardPosition(alert, customLows)
                     
                     CustomAlertCard(
@@ -438,7 +422,7 @@ fun AlertSettingsScreen(
             }
 
             // Add Low Alert Button
-            item {
+            item(key = "add-low-alert") {
                 AddCustomAlertButton(
                     text = stringResource(R.string.add_low_alert),
                     onClick = { createDefaultCustomAlert(CustomAlertType.LOW) }
@@ -446,7 +430,7 @@ fun AlertSettingsScreen(
             }
 
             // === PREDICTIVE ALERTS SECTION ===
-            item {
+            item(key = "predictive-alerts-header") {
                 Spacer(Modifier.height(8.dp))
                 SectionHeader(
                     title = stringResource(R.string.predictive_alerts),
@@ -462,20 +446,15 @@ fun AlertSettingsScreen(
                     isExpanded = expandedType == type,
                     position = getCardPosition(type, predictiveAlerts),
                     onToggle = { enabled ->
-                        val updated = config.copy(enabled = enabled)
-                        configs[type] = updated
-                        AlertRepository.saveConfig(updated)
+                        persistConfigIfChanged(config.copy(enabled = enabled))
                     },
                     onExpand = { expandedType = if (expandedType == type) null else type },
                     onConfigChange = { updated ->
-                        configs[type] = updated
-                        AlertRepository.saveConfig(updated)
+                        persistConfigIfChanged(updated)
                     },
                     onPickSound = {
                         soundPickerRequest = Triple(config.customSoundUri, config.type.id) { uri ->
-                            val updated = config.copy(customSoundUri = uri)
-                            configs[type] = updated
-                            AlertRepository.saveConfig(updated)
+                            persistConfigIfChanged(config.copy(customSoundUri = uri))
                             soundPickerRequest = null
                         }
                     }
@@ -483,7 +462,7 @@ fun AlertSettingsScreen(
             }
 
             // === OTHER ALERTS SECTION ===
-            item {
+            item(key = "other-alerts-header") {
                 Spacer(Modifier.height(16.dp))
                 SectionHeader(
                     title = stringResource(R.string.other_alerts),
@@ -499,20 +478,15 @@ fun AlertSettingsScreen(
                     isExpanded = expandedType == type,
                     position = getCardPosition(type, otherAlerts),
                     onToggle = { enabled ->
-                        val updated = config.copy(enabled = enabled)
-                        configs[type] = updated
-                        AlertRepository.saveConfig(updated)
+                        persistConfigIfChanged(config.copy(enabled = enabled))
                     },
                     onExpand = { expandedType = if (expandedType == type) null else type },
                     onConfigChange = { updated ->
-                        configs[type] = updated
-                        AlertRepository.saveConfig(updated)
+                        persistConfigIfChanged(updated)
                     },
                     onPickSound = {
                         soundPickerRequest = Triple(config.customSoundUri, config.type.id) { uri ->
-                            val updated = config.copy(customSoundUri = uri)
-                            configs[type] = updated
-                            AlertRepository.saveConfig(updated)
+                            persistConfigIfChanged(config.copy(customSoundUri = uri))
                             soundPickerRequest = null
                         }
                     }
@@ -520,12 +494,20 @@ fun AlertSettingsScreen(
             }
 
             // === SNOOZE SECTION ===
-            item {
+            item(key = "preemptive-snooze") {
                 Spacer(Modifier.height(24.dp))
                 PreemptiveSnoozeCard()
             }
 
-            item {
+            item(key = "notification-dismiss-action") {
+                Spacer(Modifier.height(8.dp))
+                NotificationDismissActionPreference(
+                    action = notificationDismissAction,
+                    onActionChange = { persistNotificationDismissAction(it) }
+                )
+            }
+
+            item(key = "talker-settings") {
                 Spacer(Modifier.height(24.dp))
                 SettingsItem(
                     title = stringResource(R.string.talker),
@@ -539,7 +521,7 @@ fun AlertSettingsScreen(
             }
 
             // Bottom padding
-            item { Spacer(Modifier.height(100.dp)) }
+            item(key = "bottom-padding") { Spacer(Modifier.height(100.dp)) }
         }
 
         // Custom Alert Dialogs
@@ -598,8 +580,12 @@ fun CustomAlertCard(
 ) {
     // Determine icon/color based on type to match AlertCard style
     val icon = if (alert.type == CustomAlertType.HIGH) Icons.AutoMirrored.Filled.TrendingUp else Icons.AutoMirrored.Filled.TrendingDown
-    // Standard High is usually Orange, Low is Red/Primary.
-    val accentColor = if (alert.type == CustomAlertType.HIGH) Color(0xFFFF9800) else Color(0xFFF44336) 
+    val isDark = isSystemInDarkTheme()
+    val accentColor = if (alert.type == CustomAlertType.HIGH) {
+        Color(GlucoseRangeColors.high(isDark))
+    } else {
+        Color(GlucoseRangeColors.low(isDark))
+    }
     var draftName by rememberSaveable(alert.id) { mutableStateOf(alert.name) }
     LaunchedEffect(alert.id, alert.name) {
         if (draftName != alert.name) {
@@ -635,6 +621,10 @@ fun CustomAlertCard(
             append(" • ${stringResource(R.string.disabled_status)}")
         }
     }
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (isExpanded) 180f else 0f,
+        label = "customAlertChevron"
+    )
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -684,9 +674,12 @@ fun CustomAlertCard(
 
                 // Chevron Indicator
                 Icon(
-                    if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    imageVector = Icons.Default.ExpandMore,
                     contentDescription = if (isExpanded) stringResource(R.string.collapse_action) else stringResource(R.string.expand_action),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(24.dp)
+                        .graphicsLayer { rotationZ = chevronRotation }
                 )
                 
                 Spacer(Modifier.width(16.dp))
@@ -701,8 +694,8 @@ fun CustomAlertCard(
             // Expanded content
             AnimatedVisibility(
                 visible = isExpanded,
-                enter = expandVertically(animationSpec = tween(150)),
-                exit = shrinkVertically(animationSpec = tween(100))
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
             ) {
                 Column(
                     modifier = Modifier
@@ -904,7 +897,12 @@ private fun AlertCard(
     onConfigChange: (AlertConfig) -> Unit,
     onPickSound: () -> Unit
 ) {
-    val (icon, accentColor) = getAlertIconAndColor(config.type)
+    val isDark = isSystemInDarkTheme()
+    val (icon, accentColor) = getAlertIconAndColor(config.type, isDark)
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (isExpanded) 180f else 0f,
+        label = "standardAlertChevron"
+    )
 
 
     Surface(
@@ -983,9 +981,12 @@ private fun AlertCard(
 
                 // Chevron Indicator (Before Switch)
                 Icon(
-                    if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    imageVector = Icons.Default.ExpandMore,
                     contentDescription = if (isExpanded) stringResource(R.string.collapse_action) else stringResource(R.string.expand_action),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(24.dp)
+                        .graphicsLayer { rotationZ = chevronRotation }
                 )
 
                 Spacer(Modifier.width(16.dp))
@@ -997,21 +998,18 @@ private fun AlertCard(
                 )
             }
 
-            // Expanded content with faster animation
+            // Expanded content
             AnimatedVisibility(
                 visible = isExpanded,
-                enter = expandVertically(animationSpec = tween(150)),
-                exit = shrinkVertically(animationSpec = tween(100))
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
             ) {
-                Column { // Removed redundant animateContentSize() as AnimatedVisibility handles it
+                Column {
                     AlertSettingsExpanded(
                         config = config,
                         isMmol = isMmol,
                         onConfigChange = onConfigChange,
                         onTest = {
-                            // Explicitly reset state for TEST to ensure it always fires
-                            // (ignoring previous triggers or suppressed state)
-                            AlertStateTracker.resetState(config.type)
                             // Use Notify.testTrigger to simulate real alarm flow
                             Notify.testTrigger(config.type.id)
                         },
@@ -1339,6 +1337,84 @@ private fun PreemptiveSnoozeCard() {
     }
 }
 
+@Composable
+private fun NotificationDismissActionPreference(
+    action: AlertNotificationDismissAction,
+    onActionChange: (AlertNotificationDismissAction) -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.24f)
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    modifier = Modifier.size(40.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.NotificationsOff,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.notification_dismiss_action_title),
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = stringResource(R.string.notification_dismiss_action_summary),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            val actionLabels = AlertNotificationDismissAction.entries.associateWith { it.localizedName() }
+            ConnectedButtonGroup(
+                options = AlertNotificationDismissAction.entries,
+                selectedOption = action,
+                onOptionSelected = onActionChange,
+                labelText = { actionLabels[it] ?: it.name },
+                label = {
+                    Text(
+                        text = actionLabels[it] ?: it.name,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Medium
+                    )
+                },
+                icon = { option ->
+                    if (option == action) Icons.Default.Check else null
+                },
+                modifier = Modifier.fillMaxWidth(),
+                itemHeight = 40.dp,
+                selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.74f),
+                selectedContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                unselectedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.56f),
+                unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PreemptiveSnoozeDialog(
@@ -1603,18 +1679,24 @@ private fun TimeRangeSlider(
     onStartChange: (Int) -> Unit,
     onEndChange: (Int) -> Unit
 ) {
-    var sliderValues by remember(startHour, endHour) { 
-        mutableStateOf(startHour.toFloat()..endHour.toFloat()) 
+    var sliderValues by remember(startHour, endHour) {
+        mutableStateOf(startHour.toFloat()..endHour.toFloat())
     }
-    
+
     RangeSlider(
         value = sliderValues,
         onValueChange = { range ->
             sliderValues = range
-            val newStart = range.start.toInt().coerceIn(0, 23)
-            val newEnd = range.endInclusive.toInt().coerceIn(0, 23)
-            if (newStart != startHour) onStartChange(newStart)
-            if (newEnd != endHour) onEndChange(newEnd)
+        },
+        onValueChangeFinished = {
+            val newStart = sliderValues.start.toInt().coerceIn(0, 23)
+            val newEnd = sliderValues.endInclusive.toInt().coerceIn(0, 23)
+            if (newStart != startHour) {
+                onStartChange(newStart)
+            }
+            if (newEnd != endHour) {
+                onEndChange(newEnd)
+            }
         },
         valueRange = 0f..23f,
         steps = 22, // 24 hours - 1 for steps
@@ -1793,15 +1875,15 @@ internal fun RetrySettings(
 
 // ---- Helper functions ----
 
-private fun getAlertIconAndColor(type: AlertType): Pair<ImageVector, Color> {
+private fun getAlertIconAndColor(type: AlertType, isDark: Boolean): Pair<ImageVector, Color> {
     return when (type) {
-        AlertType.VERY_LOW -> Icons.Default.Warning to Color(0xFFE53935)
-        AlertType.LOW -> Icons.Default.ArrowDownward to Color(0xFFFF7043)
-        AlertType.HIGH -> Icons.Default.ArrowUpward to Color(0xFFFFB300)
-        AlertType.VERY_HIGH -> Icons.Default.Warning to Color(0xFFFF6F00)
-        AlertType.PRE_LOW -> Icons.AutoMirrored.Filled.TrendingDown to Color(0xFFFF8A65)
-        AlertType.PRE_HIGH -> Icons.AutoMirrored.Filled.TrendingUp to Color(0xFFFFCA28)
-        AlertType.PERSISTENT_HIGH -> Icons.Default.Timer to Color(0xFFFFA726)
+        AlertType.VERY_LOW -> Icons.Default.Warning to Color(GlucoseRangeColors.veryLow(isDark))
+        AlertType.LOW -> Icons.Default.ArrowDownward to Color(GlucoseRangeColors.low(isDark))
+        AlertType.HIGH -> Icons.Default.ArrowUpward to Color(GlucoseRangeColors.high(isDark))
+        AlertType.VERY_HIGH -> Icons.Default.Warning to Color(GlucoseRangeColors.veryHigh(isDark))
+        AlertType.PRE_LOW -> Icons.AutoMirrored.Filled.TrendingDown to Color(GlucoseRangeColors.low(isDark))
+        AlertType.PRE_HIGH -> Icons.AutoMirrored.Filled.TrendingUp to Color(GlucoseRangeColors.high(isDark))
+        AlertType.PERSISTENT_HIGH -> Icons.Default.Timer to Color(GlucoseRangeColors.veryHigh(isDark))
         AlertType.MISSED_READING -> Icons.Default.SignalWifiOff to Color(0xFF78909C)
         AlertType.LOSS -> Icons.Default.BluetoothDisabled to Color(0xFF90A4AE)
         AlertType.SENSOR_EXPIRY -> Icons.Default.Schedule to Color(0xFF7E57C2)

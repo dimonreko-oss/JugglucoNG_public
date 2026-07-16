@@ -132,6 +132,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import tk.glucodata.GlucoseRangeColors
+import tk.glucodata.SensorIdentity
 import tk.glucodata.UiRefreshBus
 import tk.glucodata.R
 import tk.glucodata.DataSmoothing
@@ -142,6 +144,8 @@ import tk.glucodata.data.prediction.GlucosePredictionPoint
 import tk.glucodata.data.prediction.GlucosePredictionSeries
 import tk.glucodata.data.prediction.GlucosePredictionSeriesKind
 import tk.glucodata.ui.getDisplayValues
+import tk.glucodata.ui.util.GlucoseFormatter
+import tk.glucodata.ui.viewmodel.SensorColors
 import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.roundToInt
@@ -152,6 +156,86 @@ private const val PREVIEW_WINDOW_MODE_NEVER = 2
 private const val PREVIEW_WINDOW_DURATION_MS = 24L * 60L * 60L * 1000L
 private val PreviewWindowHeight = 58.dp
 private val PreviewWindowOuterPadding = 12.dp
+
+private data class ChartRangeThresholds(
+    val veryLow: Float,
+    val low: Float,
+    val high: Float,
+    val veryHigh: Float
+)
+
+private data class PeerSensorChartSeries(
+    val sensorId: String,
+    val viewMode: Int,
+    val color: Color,
+    val points: List<GlucosePoint>
+)
+
+private fun chartRangeThresholds(
+    isMmol: Boolean,
+    targetLow: Float,
+    targetHigh: Float,
+    veryLowThreshold: Float,
+    veryHighThreshold: Float
+): ChartRangeThresholds {
+    val low = targetLow.takeIf { it.isFinite() && it > 0f } ?: GlucoseRangeColors.defaultLow(isMmol)
+    val highCandidate = targetHigh.takeIf { it.isFinite() && it > low } ?: GlucoseRangeColors.defaultHigh(isMmol)
+    val high = highCandidate.coerceAtLeast(low + 0.1f)
+    val veryLow = (veryLowThreshold.takeIf { it.isFinite() && it > 0f } ?: GlucoseRangeColors.defaultVeryLow(isMmol))
+        .coerceAtMost(low - 0.1f)
+    val veryHigh = (veryHighThreshold.takeIf { it.isFinite() && it > 0f } ?: GlucoseRangeColors.defaultVeryHigh(isMmol))
+        .coerceAtLeast(high + 0.1f)
+    return ChartRangeThresholds(
+        veryLow = veryLow,
+        low = low,
+        high = high,
+        veryHigh = veryHigh
+    )
+}
+
+internal fun coerceChartYToDrawableRange(
+    value: Float,
+    chartHeight: Float,
+    edgeInset: Float
+): Float {
+    val safeHeight = if (chartHeight.isFinite() && chartHeight > 0f) chartHeight else 0f
+    val safeInset = if (edgeInset.isFinite() && edgeInset > 0f) edgeInset else 0f
+    if (!value.isFinite()) return safeHeight / 2f
+
+    val minY = safeInset
+    val maxY = safeHeight - safeInset
+    return if (maxY >= minY) {
+        value.coerceIn(minY, maxY)
+    } else {
+        value.coerceIn(0f, safeHeight)
+    }
+}
+
+internal fun previewCenterTimeForWindowEnd(windowEndTime: Long): Long {
+    return windowEndTime - PREVIEW_WINDOW_DURATION_MS / 2L
+}
+
+internal fun previewCenterTimeContainingViewport(
+    previewCenterTime: Long,
+    viewportCenterTime: Long,
+    visibleDuration: Long
+): Long {
+    if (visibleDuration >= PREVIEW_WINDOW_DURATION_MS) {
+        return viewportCenterTime
+    }
+
+    val previewHalfDuration = PREVIEW_WINDOW_DURATION_MS / 2L
+    val previewStart = previewCenterTime - previewHalfDuration
+    val previewEnd = previewCenterTime + previewHalfDuration
+    val viewportStart = viewportCenterTime - visibleDuration / 2L
+    val viewportEnd = viewportCenterTime + visibleDuration / 2L
+
+    return when {
+        viewportStart < previewStart -> viewportStart + previewHalfDuration
+        viewportEnd > previewEnd -> viewportEnd - previewHalfDuration
+        else -> previewCenterTime
+    }
+}
 
 private fun smoothChartSeries(
     points: List<GlucosePoint>,
@@ -556,8 +640,12 @@ private fun List<GlucosePoint>.sliceByTimestampRange(startMillis: Long, endMilli
 fun DashboardChartSection(
     modifier: Modifier,
     glucoseHistory: List<GlucosePoint>,
+    multiSensorDisplay: MultiSensorDisplayData = MultiSensorDisplayData.EMPTY,
+    peerPredictionSeries: Map<String, List<GlucosePredictionSeries>> = emptyMap(),
     journalMarkers: List<JournalChartMarker> = emptyList(),
     activeInsulinSummary: JournalActiveInsulinSummary? = null,
+    showEiob: Boolean = true,
+    appChartRangeColors: Boolean = false,
     predictionPoints: List<GlucosePredictionPoint> = emptyList(),
     predictionSeries: List<GlucosePredictionSeries> = emptyList(),
     graphSmoothingMinutes: Int = 0,
@@ -568,6 +656,8 @@ fun DashboardChartSection(
     targetLow: Float,
     targetHigh: Float,
     unit: String,
+    veryLowThreshold: Float = GlucoseRangeColors.defaultVeryLow(GlucoseFormatter.isMmol(unit)),
+    veryHighThreshold: Float = GlucoseRangeColors.defaultVeryHigh(GlucoseFormatter.isMmol(unit)),
     viewMode: Int,
     onTimeRangeSelected: (TimeRange) -> Unit,
     selectedTimeRange: TimeRange,
@@ -592,8 +682,12 @@ fun DashboardChartSection(
                 if (glucoseHistory.isNotEmpty()) {
                     InteractiveGlucoseChart(
                         fullData = glucoseHistory,
+                        multiSensorDisplay = multiSensorDisplay,
+                        peerPredictionSeries = peerPredictionSeries,
                         journalMarkers = journalMarkers,
                         activeInsulinSummary = activeInsulinSummary,
+                        showEiob = showEiob,
+                        appChartRangeColors = appChartRangeColors,
                         predictionPoints = predictionPoints,
                         predictionSeries = predictionSeries,
                         graphSmoothingMinutes = graphSmoothingMinutes,
@@ -603,6 +697,8 @@ fun DashboardChartSection(
                         graphHigh = graphHigh,
                         targetLow = targetLow,
                         targetHigh = targetHigh,
+                        veryLowThreshold = veryLowThreshold,
+                        veryHighThreshold = veryHighThreshold,
                         unit = unit,
                         viewMode = viewMode,
                         calibrations = calibrations,
@@ -651,8 +747,12 @@ fun DashboardChartSection(
 @Composable
 fun InteractiveGlucoseChart(
     fullData: List<GlucosePoint>,
+    multiSensorDisplay: MultiSensorDisplayData = MultiSensorDisplayData.EMPTY,
+    peerPredictionSeries: Map<String, List<GlucosePredictionSeries>> = emptyMap(),
     journalMarkers: List<JournalChartMarker> = emptyList(),
     activeInsulinSummary: JournalActiveInsulinSummary? = null,
+    showEiob: Boolean = true,
+    appChartRangeColors: Boolean = false,
     predictionPoints: List<GlucosePredictionPoint> = emptyList(),
     predictionSeries: List<GlucosePredictionSeries> = emptyList(),
     graphSmoothingMinutes: Int = 0,
@@ -663,6 +763,8 @@ fun InteractiveGlucoseChart(
     targetLow: Float,
     targetHigh: Float,
     unit: String,
+    veryLowThreshold: Float = GlucoseRangeColors.defaultVeryLow(GlucoseFormatter.isMmol(unit)),
+    veryHighThreshold: Float = GlucoseRangeColors.defaultVeryHigh(GlucoseFormatter.isMmol(unit)),
     viewMode: Int = 0,
     calibrations: List<tk.glucodata.data.calibration.CalibrationEntity> = emptyList(),
     onDateSelected: (Long) -> Unit = {},
@@ -719,16 +821,16 @@ fun InteractiveGlucoseChart(
         safeExpandedProgress
     )
 
-    // Using colors from StatsScreen.kt as requested
-    val TirVeryLowColor = Color(0xFFF0A24A)
-    val TirLowColor = Color(0xFFE7C85A)
-    val TirHighColor = Color(0xFFC56F33)
-    val TirVeryHighColor = Color(0xFFA44B2D)
+    val TirLowColor = Color(GlucoseRangeColors.low(isDark))
+    val TirHighColor = Color(GlucoseRangeColors.high(isDark))
 
     // Using the "High" color for the generic high tint base, and "Low" for low tint base
     // Adjusting alpha for visibility on graph background
     val lowOutOfRangeTintBase = TirLowColor
     val highOutOfRangeTintBase = TirHighColor
+    // Neutral target for desaturating peer (secondary sensor) traces — theme
+    // token so it adapts to light/dark and dynamic color.
+    val peerNeutralBase = MaterialTheme.colorScheme.onSurfaceVariant
 
 
     val context = LocalContext.current
@@ -805,6 +907,34 @@ fun InteractiveGlucoseChart(
     val renderData = remember(safeData, graphSmoothingMinutes, collapseSmoothedData) {
         buildSmoothedChartData(safeData, graphSmoothingMinutes, collapseSmoothedData)
     }
+    val peerChartSeries = remember(
+        multiSensorDisplay,
+        graphSmoothingMinutes,
+        collapseSmoothedData
+    ) {
+        multiSensorDisplay.series.mapNotNull { series ->
+            if (series.points.size < 2) return@mapNotNull null
+            PeerSensorChartSeries(
+                sensorId = series.sensorId,
+                viewMode = series.viewMode,
+                color = Color(series.colorArgb),
+                points = buildSmoothedChartData(series.points, graphSmoothingMinutes, collapseSmoothedData)
+            )
+        }
+    }
+    val peerPointsByBucket = multiSensorDisplay.bucketLookup
+    // serial (normalized to logical id) -> draw attributes; O(1) lookups in the
+    // cursor/tooltip hot paths instead of SensorIdentity.matches per frame.
+    val peerDrawAttrs = remember(multiSensorDisplay) {
+        multiSensorDisplay.series.associate { series ->
+            series.sensorId to (Color(series.colorArgb) to series.viewMode)
+        }
+    }
+    val primarySerial = fullData.lastOrNull()?.sensorSerial
+    val primaryIdentityColor = remember(primarySerial) {
+        val logical = SensorIdentity.resolveAppSensorId(primarySerial) ?: primarySerial
+        SensorColors.getColor(logical.orEmpty())
+    }
     val interactionData = remember(safeData, renderData, graphSmoothingMinutes) {
         if (graphSmoothingMinutes > 0) renderData else safeData
     }
@@ -820,6 +950,7 @@ fun InteractiveGlucoseChart(
 
     // Reusable objects to avoid allocation on every frame
     val reusablePath = remember { Path() }
+    val reusablePeerPath = remember { Path() }
     val reusableRawPath = remember { Path() }
     val reusableAutoPath = remember { Path() }
     val reusableDate = remember { java.util.Date() }
@@ -907,10 +1038,16 @@ fun InteractiveGlucoseChart(
     fun liveCenterTimeFor(latestTimestamp: Long, durationMillis: Long): Long {
         return liveEndTimeFor(latestTimestamp, durationMillis) - (durationMillis / 2L)
     }
+
+    fun livePreviewCenterTimeFor(latestTimestamp: Long, durationMillis: Long): Long {
+        return previewCenterTimeForWindowEnd(liveEndTimeFor(latestTimestamp, durationMillis))
+    }
     
     var preZoomDuration by rememberSaveable { mutableLongStateOf(0L) } // For toggle zoom
     var centerTime by rememberSaveable { mutableLongStateOf(now - visibleDuration / 2) }
-    var previewCenterTime by rememberSaveable { mutableLongStateOf(now - PREVIEW_WINDOW_DURATION_MS / 2) }
+    var previewCenterTime by rememberSaveable {
+        mutableLongStateOf(livePreviewCenterTimeFor(latestDataTimestamp.takeIf { it > 0L } ?: now, visibleDuration))
+    }
 
     // Date picker state
     var showDatePicker by remember { mutableStateOf(false) }
@@ -931,6 +1068,52 @@ fun InteractiveGlucoseChart(
     var isUserInteracting by remember { mutableStateOf(false) }
     var lastInteractionTimestamp by rememberSaveable { mutableLongStateOf(0L) }
     var suppressDoubleTapUntil by rememberSaveable { mutableLongStateOf(0L) }
+
+    // Limits
+    val minDuration = 10L * 60 * 1000
+    val maxDuration = remember(earliestDataTimestamp, latestDataTimestamp) {
+        val fullSpan = (latestDataTimestamp - earliestDataTimestamp).coerceAtLeast(0L)
+        maxOf(72L * 60L * 60L * 1000L, fullSpan + (2L * 60L * 60L * 1000L))
+    }
+    fun maxAllowedCenterTime(durationMillis: Long): Long {
+        val journalAwareEnd = maxOf(System.currentTimeMillis(), latestDataTimestamp, latestJournalTimelineTimestamp)
+        return if (hasPredictionOverlay && predictionEndTimestamp > journalAwareEnd) {
+            predictionEndTimestamp - durationMillis / 2L
+        } else {
+            journalAwareEnd + (2L * 60L * 1000L)
+        }
+    }
+
+    val maxAllowedTime = maxAllowedCenterTime(visibleDuration)
+
+    fun isViewportAtLiveEdge(durationMillis: Long): Boolean {
+        val latestOrNow = latestDataTimestamp.takeIf { it > 0L } ?: System.currentTimeMillis()
+        val viewportEnd = centerTime + durationMillis / 2L
+        val liveEnd = liveEndTimeFor(latestOrNow, durationMillis)
+        return abs(viewportEnd - liveEnd) <= 10L * 60L * 1000L
+    }
+
+    fun applyTimeRangeDuration(durationMillis: Long) {
+        val keepLiveEdge = isViewportAtLiveEdge(visibleDuration)
+        val latestOrNow = latestDataTimestamp.takeIf { it > 0L } ?: System.currentTimeMillis()
+        val targetCenter = if (keepLiveEdge) {
+            liveCenterTimeFor(latestOrNow, durationMillis)
+        } else {
+            centerTime
+        }.coerceAtMost(maxAllowedCenterTime(durationMillis))
+
+        visibleDuration = durationMillis
+        centerTime = targetCenter
+        previewCenterTime = if (keepLiveEdge) {
+            previewCenterTimeForWindowEnd(targetCenter + durationMillis / 2L)
+        } else {
+            previewCenterTimeContainingViewport(
+                previewCenterTime = previewCenterTime,
+                viewportCenterTime = targetCenter,
+                visibleDuration = durationMillis
+            )
+        }
+    }
 
     // TRACKING INACTIVITY FOR GRAPH RESET
     var lastActiveTime by rememberSaveable { mutableLongStateOf(System.currentTimeMillis()) }
@@ -956,7 +1139,7 @@ fun InteractiveGlucoseChart(
                         currentTime - visibleDuration / 2
                     }
                     centerTime = targetCenter
-                    previewCenterTime = targetCenter
+                    previewCenterTime = previewCenterTimeForWindowEnd(targetCenter + visibleDuration / 2L)
                     lastAutoScrolledTimestamp = 0L
                 }
             }
@@ -969,24 +1152,16 @@ fun InteractiveGlucoseChart(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // FIX: React to Time Range Selection explicitly.
-    // Ensure we don't clobber the user's manual zoom if they just navigated away and back.
-    // 'lastAppliedRangeName' tracks the last *user-selected* time range applied to this chart.
-    // If 'selectedTimeRange' (prop) matches what we last applied, we do nothing (preserve zoom).
-    // If it differs (user clicked a button in parent), we update.
+    // React to parent range state only when it represents a new range button choice.
+    // Range changes alter the visible duration inside the current frame; tapping the
+    // already-active range button is the explicit "back to now" action.
     var lastAppliedRangeName by rememberSaveable { mutableStateOf(selectedTimeRange?.name) }
 
     LaunchedEffect(selectedTimeRange) {
         if (selectedTimeRange != null && selectedTimeRange.name != lastAppliedRangeName) {
             lastAppliedRangeName = selectedTimeRange.name
             val target = selectedTimeRange.hours * 60 * 60 * 1000L
-            if (visibleDuration != target) {
-                visibleDuration = target
-                // Snap to latest data when changing range for immediate feedback
-                if (latestDataTimestamp > 0) {
-                     centerTime = liveCenterTimeFor(latestDataTimestamp, target)
-                }
-            }
+            applyTimeRangeDuration(target)
         }
     }
 
@@ -998,8 +1173,9 @@ fun InteractiveGlucoseChart(
         val switchedToOlderSeries = lastAutoScrolledTimestamp > 0L && latestDataTimestamp + 60_000L < lastAutoScrolledTimestamp
 
         if (lastAutoScrolledTimestamp == 0L || switchedToOlderSeries) {
-            centerTime = liveCenterTimeFor(latestDataTimestamp, visibleDuration)
-            previewCenterTime = centerTime
+            val targetCenter = liveCenterTimeFor(latestDataTimestamp, visibleDuration)
+            centerTime = targetCenter
+            previewCenterTime = previewCenterTimeForWindowEnd(targetCenter + visibleDuration / 2L)
             lastAutoScrolledTimestamp = latestDataTimestamp
         }
     }
@@ -1010,25 +1186,27 @@ fun InteractiveGlucoseChart(
         }
         val currentEnd = centerTime + visibleDuration / 2
         if (abs(currentEnd - latestDataTimestamp) < 75L * 60L * 1000L) {
-            centerTime = liveCenterTimeFor(latestDataTimestamp, visibleDuration)
-            previewCenterTime = centerTime
+            val targetCenter = liveCenterTimeFor(latestDataTimestamp, visibleDuration)
+            centerTime = targetCenter
+            previewCenterTime = previewCenterTimeForWindowEnd(targetCenter + visibleDuration / 2L)
         }
     }
 
-    LaunchedEffect(centerTime, visibleDuration, previewWindowMode) {
+    LaunchedEffect(centerTime, visibleDuration, previewWindowMode, latestDataTimestamp, predictionEndTimestamp, isUserInteracting) {
         if (previewWindowMode == PREVIEW_WINDOW_MODE_NEVER) return@LaunchedEffect
 
-        val previewHalfDuration = PREVIEW_WINDOW_DURATION_MS / 2
-        val previewStart = previewCenterTime - previewHalfDuration
-        val previewEnd = previewCenterTime + previewHalfDuration
-        val viewportStart = centerTime - visibleDuration / 2
-        val viewportEnd = centerTime + visibleDuration / 2
+        val viewportEnd = centerTime + visibleDuration / 2L
+        val liveEnd = liveEndTimeFor(latestDataTimestamp.takeIf { it > 0L } ?: System.currentTimeMillis(), visibleDuration)
+        val isLiveViewport = !isUserInteracting && abs(viewportEnd - liveEnd) <= 10L * 60L * 1000L
 
-        previewCenterTime = when {
-            visibleDuration >= PREVIEW_WINDOW_DURATION_MS -> centerTime
-            viewportStart < previewStart -> viewportStart + previewHalfDuration
-            viewportEnd > previewEnd -> viewportEnd - previewHalfDuration
-            else -> previewCenterTime
+        previewCenterTime = if (isLiveViewport) {
+            previewCenterTimeForWindowEnd(liveEnd)
+        } else {
+            previewCenterTimeContainingViewport(
+                previewCenterTime = previewCenterTime,
+                viewportCenterTime = centerTime,
+                visibleDuration = visibleDuration
+            )
         }
     }
 
@@ -1040,8 +1218,9 @@ fun InteractiveGlucoseChart(
 
             if (!isResumed) {
                 if (isMonitoring) {
-                    centerTime = liveCenterTimeFor(latestDataTimestamp, visibleDuration)
-                    previewCenterTime = centerTime
+                    val targetCenter = liveCenterTimeFor(latestDataTimestamp, visibleDuration)
+                    centerTime = targetCenter
+                    previewCenterTime = previewCenterTimeForWindowEnd(targetCenter + visibleDuration / 2L)
                 }
                 lastAutoScrolledTimestamp = latestDataTimestamp
                 return@LaunchedEffect
@@ -1052,7 +1231,9 @@ fun InteractiveGlucoseChart(
 
             // Keep monitoring users on live data, but preserve viewport when they were browsing history.
             if (isMonitoring) {
-                centerTime = liveCenterTimeFor(latestDataTimestamp, visibleDuration)
+                val targetCenter = liveCenterTimeFor(latestDataTimestamp, visibleDuration)
+                centerTime = targetCenter
+                previewCenterTime = previewCenterTimeForWindowEnd(targetCenter + visibleDuration / 2L)
             }
             lastAutoScrolledTimestamp = latestDataTimestamp
         }
@@ -1080,13 +1261,22 @@ fun InteractiveGlucoseChart(
             // Only advance forward, never rewind (avoids fighting other effects).
             if (targetCenter > centerTime) {
                 centerTime = targetCenter
-                previewCenterTime = targetCenter
+                previewCenterTime = previewCenterTimeForWindowEnd(targetCenter + visibleDuration / 2L)
             }
         }
     }
 
     // --- Y-AXIS STATE (Manual Scaling) ---
     val isMmol = if (unit.isNotEmpty()) tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit) else tk.glucodata.ui.util.GlucoseFormatter.isMmolApp()
+    val rangeThresholds = remember(isMmol, targetLow, targetHigh, veryLowThreshold, veryHighThreshold) {
+        chartRangeThresholds(
+            isMmol = isMmol,
+            targetLow = targetLow,
+            targetHigh = targetHigh,
+            veryLowThreshold = veryLowThreshold,
+            veryHighThreshold = veryHighThreshold
+        )
+    }
     val fallbackMin = 0f
     val fallbackMax = if (isMmol) 13f else 234f
     val graphRangeDefaults = resolveGraphRangeDefaults(
@@ -1134,23 +1324,6 @@ fun InteractiveGlucoseChart(
     val coroutineScope = rememberCoroutineScope()
     val velocityTracker = remember { VelocityTracker() }
     val inertiaAnim = remember { Animatable(0f) }
-
-    // Limits
-    val minDuration = 10L * 60 * 1000
-    val maxDuration = remember(earliestDataTimestamp, latestDataTimestamp) {
-        val fullSpan = (latestDataTimestamp - earliestDataTimestamp).coerceAtLeast(0L)
-        maxOf(72L * 60L * 60L * 1000L, fullSpan + (2L * 60L * 60L * 1000L))
-    }
-    fun maxAllowedCenterTime(durationMillis: Long): Long {
-        val journalAwareEnd = maxOf(System.currentTimeMillis(), latestDataTimestamp, latestJournalTimelineTimestamp)
-        return if (hasPredictionOverlay && predictionEndTimestamp > journalAwareEnd) {
-            predictionEndTimestamp - durationMillis / 2L
-        } else {
-            journalAwareEnd + (2L * 60L * 1000L)
-        }
-    }
-
-    val maxAllowedTime = maxAllowedCenterTime(visibleDuration)
 
     fun cancelAutoScroll() {
         autoScrollJob?.cancel()
@@ -1252,6 +1425,13 @@ fun InteractiveGlucoseChart(
     val currentMaxAllowedTime by rememberUpdatedState(maxAllowedTime)
     val currentHasPredictionOverlay by rememberUpdatedState(hasPredictionOverlay)
     val currentSafeExpandedProgress by rememberUpdatedState(safeExpandedProgress)
+
+    fun panViewportByPixels(deltaX: Float, widthPx: Float) {
+        if (!deltaX.isFinite() || widthPx <= 0f) return
+        val timePerPixel = visibleDuration.toFloat() / widthPx
+        val timeDelta = -(deltaX * timePerPixel).toLong()
+        centerTime = (centerTime + timeDelta).coerceAtMost(currentMaxAllowedTime)
+    }
 
     // --- DATA HELPER (Fixed Interpolation) ---
     fun getPointAt(timeAtTapRaw: Double): GlucosePoint? {
@@ -1686,11 +1866,7 @@ fun InteractiveGlucoseChart(
 
                                         if (abs(panX) > abs(panY)) {
                                             // Horizontal pan
-                                            val timePerPixel =
-                                                visibleDuration.toFloat() / usefulWidth
-                                            val timeDelta = -(panX * timePerPixel).toLong()
-                                            centerTime =
-                                                (centerTime + timeDelta).coerceAtMost(currentMaxAllowedTime)
+                                            panViewportByPixels(panX, usefulWidth)
                                         } else if (totalDragDistance > 30f) {
                                             // Vertical scale
                                             val liveYMin = yMin
@@ -1835,77 +2011,140 @@ fun InteractiveGlucoseChart(
             val heightPx = constraints.maxHeight.toFloat()
             val chartHeightPx = (heightPx - chartUnderlayBottomPx - previewWindowReservedPx - bottomAxisHeightPx - chartPlotBottomGapPx).coerceAtLeast(1f)
             
-            val limitYHigh = if (yMax - yMin > 0.001f) {
-                (chartHeightPx * (1f - (targetHigh - yMin) / (yMax - yMin))).coerceIn(-2000f, chartHeightPx + 2000f)
-            } else 0f
-            
-            val limitYLow = if (yMax - yMin > 0.001f) {
-                 (chartHeightPx * (1f - (targetLow - yMin) / (yMax - yMin))).coerceIn(-2000f, chartHeightPx + 2000f)
-            } else 0f
-
-            val gradientBrush = remember(limitYHigh, limitYLow, chartHeightPx, isDark, primaryColor) {
-                val highTintColor = if (isDark) highOutOfRangeTintBase.copy(alpha = 0.6f) else highOutOfRangeTintBase.copy(alpha = 0.9f)
-                val lowTintColor = lowOutOfRangeTintBase.copy(alpha = if (isDark) 0.6f else 0.9f)
-                val fadePx = 20f
-                
-                if (chartHeightPx > 0) {
-                     val stops = arrayOfNulls<Pair<Float, Color>>(5)
-                        var stopCount = 0
-                        
-                        // High Region (Red) - fades IN from Red to Primary above line
-                        // Pixels < limitYHigh are High.
-                        stops[stopCount++] = 0f to highTintColor
-                        if (limitYHigh > 0) {
-                            val fadeStart = (limitYHigh - fadePx).coerceAtLeast(0f)
-                            val stopHighStart = (fadeStart / chartHeightPx).coerceIn(0f, 1f)
-                            stops[stopCount++] = stopHighStart to highTintColor
-                            
-                            val stopHighEnd = (limitYHigh / chartHeightPx).coerceIn(stopHighStart, 1f)
-                            stops[stopCount++] = stopHighEnd to primaryColor
-                        } else {
-                            stops[stopCount++] = 0f to primaryColor
-                        }
-                        
-                        // Low Region (Yellow) - fades OUT from Primary to Yellow below line
-                        // Pixels > limitYLow are Low.
-                        if (limitYLow < chartHeightPx) {
-                            val stopLowStart = (limitYLow / chartHeightPx).coerceIn(0f, 1f)
-                            stops[stopCount++] = stopLowStart to primaryColor
-                            
-                            val fadeEnd = (limitYLow + fadePx).coerceAtMost(chartHeightPx)
-                            val stopLowEnd = (fadeEnd / chartHeightPx).coerceIn(stopLowStart, 1f)
-                            stops[stopCount++] = stopLowEnd to lowTintColor
-                        }
-                        
-                        // Ensure last stop is at 1f
-                        val lastStop = stops[stopCount - 1]?.first ?: 0f
-                        if (lastStop < 1f) {
-                             // Last color used was lowTintColor if we added low stops, or primary if not.
-                             // Actually better to just build with list for safety given complexity
-                             val safeStops = mutableListOf<Pair<Float, Color>>()
-                             for (i in 0 until stopCount) {
-                                 stops[i]?.let { safeStops.add(it) }
-                             }
-                             // Add final stop
-                             if (limitYLow < chartHeightPx) safeStops.add(1f to lowTintColor)
-                             else safeStops.add(1f to primaryColor)
-                             
-                             Brush.verticalGradient(
-                                *safeStops.toTypedArray(),
-                                startY = 0f,
-                                endY = chartHeightPx
-                             )
-                        } else {
-                             // Array copy for safety
-                             val safeStops = Array(stopCount) { i -> stops[i]!! }
-                             Brush.verticalGradient(
-                                *safeStops,
-                                startY = 0f,
-                                endY = chartHeightPx
-                             )
-                        }
+            val ySpanForGradient = yMax - yMin
+            fun thresholdY(value: Float): Float {
+                return if (ySpanForGradient > 0.001f) {
+                    (chartHeightPx * (1f - (value - yMin) / ySpanForGradient)).coerceIn(-2000f, chartHeightPx + 2000f)
                 } else {
-                     Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
+                    0f
+                }
+            }
+
+            val limitYVeryHigh = thresholdY(rangeThresholds.veryHigh)
+            val limitYHigh = thresholdY(rangeThresholds.high)
+            val limitYLow = thresholdY(rangeThresholds.low)
+            val limitYVeryLow = thresholdY(rangeThresholds.veryLow)
+
+            // Multi-sensor: the primary trace carries a subtle identity tint so
+            // it pairs with its (tinted) values, like the peer traces do.
+            val primaryLineTintFraction = if (peerChartSeries.isNotEmpty()) 0.22f else 0f
+            val appTrafficDark = isSystemInDarkTheme()
+            val gradientBrush = remember(
+                limitYVeryHigh,
+                limitYHigh,
+                limitYLow,
+                limitYVeryLow,
+                chartHeightPx,
+                primaryColor,
+                highOutOfRangeTintBase,
+                lowOutOfRangeTintBase,
+                primaryLineTintFraction,
+                primaryIdentityColor,
+                appChartRangeColors,
+                appTrafficDark
+            ) {
+                if (chartHeightPx <= 0f) {
+                    Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
+                } else {
+                    fun identityTinted(color: Color): Color =
+                        if (primaryLineTintFraction > 0f) {
+                            androidx.compose.ui.graphics.lerp(color, primaryIdentityColor, primaryLineTintFraction)
+                        } else {
+                            color
+                        }
+
+                    // Traffic mode swaps the muted tints for the same palette
+                    // the value/notification coloring uses, incl. green in range.
+                    val veryHighTint = identityTinted(
+                        if (appChartRangeColors) Color(GlucoseRangeColors.valueOut(appTrafficDark))
+                        else Color(GlucoseRangeColors.VERY_HIGH)
+                    )
+                    val highTint = identityTinted(
+                        if (appChartRangeColors) Color(GlucoseRangeColors.valueBorderline(appTrafficDark))
+                        else highOutOfRangeTintBase
+                    )
+                    val lowTint = identityTinted(
+                        if (appChartRangeColors) Color(GlucoseRangeColors.valueBorderline(appTrafficDark))
+                        else lowOutOfRangeTintBase
+                    )
+                    val veryLowTint = identityTinted(
+                        if (appChartRangeColors) Color(GlucoseRangeColors.valueOut(appTrafficDark))
+                        else Color(GlucoseRangeColors.VERY_LOW)
+                    )
+                    val inRangeTint = identityTinted(
+                        if (appChartRangeColors) Color(GlucoseRangeColors.valueInRange(appTrafficDark))
+                        else primaryColor
+                    )
+                    val fadePx = 18f
+                    val stops = mutableListOf<Pair<Float, Color>>()
+
+                    fun addStop(y: Float, color: Color) {
+                        stops += (y / chartHeightPx).coerceIn(0f, 1f) to color
+                    }
+
+                    addStop(0f, veryHighTint)
+                    addStop(limitYVeryHigh, veryHighTint)
+                    addStop(limitYHigh, highTint)
+                    addStop(limitYHigh + fadePx, inRangeTint)
+                    addStop(limitYLow - fadePx, inRangeTint)
+                    addStop(limitYLow, lowTint)
+                    addStop(limitYVeryLow, veryLowTint)
+                    addStop(chartHeightPx, veryLowTint)
+
+                    Brush.verticalGradient(
+                        *stops.sortedBy { it.first }.toTypedArray(),
+                        startY = 0f,
+                        endY = chartHeightPx
+                    )
+                }
+            }
+            val peerBrushes = remember(
+                peerChartSeries,
+                limitYVeryHigh,
+                limitYHigh,
+                limitYLow,
+                limitYVeryLow,
+                chartHeightPx,
+                highOutOfRangeTintBase,
+                lowOutOfRangeTintBase,
+                peerNeutralBase
+            ) {
+                if (chartHeightPx <= 0f) {
+                    emptyMap()
+                } else {
+                    val veryHighTint = Color(GlucoseRangeColors.VERY_HIGH)
+                    val veryLowTint = Color(GlucoseRangeColors.VERY_LOW)
+                    val fadePx = 18f
+                    peerChartSeries.associate { series ->
+                        // Tone down the coloring (desaturate toward the neutral
+                        // theme token) while keeping the trace clearly visible.
+                        val base = androidx.compose.ui.graphics.lerp(series.color, peerNeutralBase, 0.46f)
+                        val normal = base.copy(alpha = 0.76f)
+                        val high = androidx.compose.ui.graphics.lerp(base, highOutOfRangeTintBase, 0.48f).copy(alpha = 0.72f)
+                        val veryHigh = androidx.compose.ui.graphics.lerp(base, veryHighTint, 0.58f).copy(alpha = 0.74f)
+                        val low = androidx.compose.ui.graphics.lerp(base, lowOutOfRangeTintBase, 0.48f).copy(alpha = 0.72f)
+                        val veryLow = androidx.compose.ui.graphics.lerp(base, veryLowTint, 0.58f).copy(alpha = 0.74f)
+                        val stops = mutableListOf<Pair<Float, Color>>()
+
+                        fun addStop(y: Float, color: Color) {
+                            stops += (y / chartHeightPx).coerceIn(0f, 1f) to color
+                        }
+
+                        addStop(0f, veryHigh)
+                        addStop(limitYVeryHigh, veryHigh)
+                        addStop(limitYHigh, high)
+                        addStop(limitYHigh + fadePx, normal)
+                        addStop(limitYLow - fadePx, normal)
+                        addStop(limitYLow, low)
+                        addStop(limitYVeryLow, veryLow)
+                        addStop(chartHeightPx, veryLow)
+
+                        series.sensorId to Brush.verticalGradient(
+                            *stops.sortedBy { it.first }.toTypedArray(),
+                            startY = 0f,
+                            endY = chartHeightPx
+                        )
+                    }
                 }
             }
 
@@ -2074,12 +2313,96 @@ fun InteractiveGlucoseChart(
                 val hideInitialWhenCalibrated = hasCalibration &&
                     tk.glucodata.data.calibration.CalibrationManager.shouldHideInitialWhenCalibrated()
 
+                if (peerChartSeries.isNotEmpty()) {
+                    val peerGapThreshold = 900000L // 15 mins
+                    val peerStroke = 2.dp.toPx()
+                    fun drawPeerSeriesLine(
+                        series: PeerSensorChartSeries,
+                        useRaw: Boolean,
+                        alpha: Float,
+                        strokeWidth: Float
+                    ) {
+                        val points = series.points
+                        if (points.size < 2) return
+                        val peerStartIdx = points.binarySearchBy(searchStart) { it.timestamp }
+                            .let { if (it < 0) -it - 2 else it }
+                            .coerceIn(0, points.size)
+                        val peerEndIdx = points.binarySearchBy(searchEnd) { it.timestamp }
+                            .let { if (it < 0) -it else it + 1 }
+                            .coerceIn(peerStartIdx, points.size)
+                        if (peerEndIdx <= peerStartIdx) return
+
+                        reusablePeerPath.rewind()
+                        var first = true
+                        var hasPath = false
+                        var lastTimestamp = 0L
+                        for (i in peerStartIdx until peerEndIdx) {
+                            val point = points[i]
+                            val value = if (useRaw) point.rawValue else point.value
+                            if (!value.isFinite() || value <= 0.1f) {
+                                first = true
+                                continue
+                            }
+                            val px = timeToDataX(point.timestamp)
+                            val py = valToY(value)
+                            if (!px.isFinite() || !py.isFinite()) {
+                                first = true
+                                continue
+                            }
+                            if (!first && point.timestamp - lastTimestamp > peerGapThreshold) {
+                                first = true
+                            }
+                            if (first) {
+                                reusablePeerPath.moveTo(px, py)
+                                first = false
+                            } else {
+                                reusablePeerPath.lineTo(px, py)
+                            }
+                            hasPath = true
+                            lastTimestamp = point.timestamp
+                        }
+                        if (!hasPath) return
+                        val brush = peerBrushes[series.sensorId]
+                        if (brush != null) {
+                            drawPath(
+                                path = reusablePeerPath,
+                                brush = brush,
+                                alpha = alpha,
+                                style = Stroke(
+                                    width = strokeWidth,
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round
+                                )
+                            )
+                        } else {
+                            drawPath(
+                                path = reusablePeerPath,
+                                color = androidx.compose.ui.graphics.lerp(series.color, peerNeutralBase, 0.46f).copy(alpha = 0.5f * alpha),
+                                style = Stroke(
+                                    width = strokeWidth,
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round
+                                )
+                            )
+                        }
+                    }
+                    peerChartSeries.forEach { series ->
+                        val drawRawPeer = series.viewMode == 1 || series.viewMode == 2 || series.viewMode == 3
+                        val drawAutoPeer = series.viewMode == 0 || series.viewMode == 2 || series.viewMode == 3
+                        when {
+                            drawRawPeer && drawAutoPeer -> {
+                                drawPeerSeriesLine(series, useRaw = true, alpha = 0.68f, strokeWidth = peerStroke * 0.84f)
+                                drawPeerSeriesLine(series, useRaw = false, alpha = 0.88f, strokeWidth = peerStroke)
+                            }
+                            drawRawPeer -> drawPeerSeriesLine(series, useRaw = true, alpha = 0.88f, strokeWidth = peerStroke)
+                            drawAutoPeer -> drawPeerSeriesLine(series, useRaw = false, alpha = 0.88f, strokeWidth = peerStroke)
+                        }
+                    }
+                }
+
                 // --- 3. DATA LINES (Unified & Optimized) ---
                 if (endIdx > startIdx) {
                     val gapThreshold = 900000L // 15 mins
-                    // Gradient Colors: High (Red) -> Normal (Primary) -> Low (Yellow)
-                    val highTintColor = highOutOfRangeTintBase.copy(alpha = if (isDark) 0.1f else 0.2f)
-                    val lowTintColor = lowOutOfRangeTintBase.copy(alpha = if (isDark) 0.1f else 0.2f) // Boosted for visibility
                     
                     val hideRawSource = hideInitialWhenCalibrated && isRawModeChart
                     val hideAutoSource = hideInitialWhenCalibrated && !isRawModeChart
@@ -2433,6 +2756,55 @@ fun InteractiveGlucoseChart(
                     )
                 }
 
+                // --- 3b. PEER PREDICTION LINES ---
+                // Extend the simulation to every peer line too (dashed, in the
+                // peer's desaturated identity color, no uncertainty band).
+                if (peerPredictionSeries.isNotEmpty() && peerChartSeries.isNotEmpty()) {
+                    peerChartSeries.forEach { peer ->
+                        val peerSeriesList = peerPredictionSeries[peer.sensorId] ?: return@forEach
+                        val peerPredColor = androidx.compose.ui.graphics.lerp(peer.color, peerNeutralBase, 0.46f)
+                        peerSeriesList.forEach predict@{ series ->
+                            val valid = series.points.filter { it.value.isFinite() && it.value > 0.1f }
+                            val firstVis = valid.indexOfFirst { it.timestamp >= viewportStart }
+                            val lastVis = valid.indexOfLast { it.timestamp <= viewportEnd }
+                            if (firstVis == -1 || lastVis == -1) return@predict
+                            val s = (firstVis - 1).coerceAtLeast(0)
+                            val e = (lastVis + 1).coerceAtMost(valid.lastIndex)
+                            val vis = valid.subList(s, e + 1)
+                            if (vis.size < 2) return@predict
+                            val samples = vis.mapNotNull { p ->
+                                val x = timeToDataX(p.timestamp)
+                                val y = valToY(p.value)
+                                if (x.isFinite() && y.isFinite()) Offset(x, y) else null
+                            }
+                            if (samples.size < 2) return@predict
+                            val predictionPath = Path().apply {
+                                addSmoothedPredictionOffsets(this, samples, moveToFirst = true)
+                            }
+                            val startX = samples.first().x
+                            val endX = samples.last().x.takeIf { abs(it - startX) > 1f } ?: (startX + 1f)
+                            drawPath(
+                                path = predictionPath,
+                                brush = Brush.horizontalGradient(
+                                    colorStops = arrayOf(
+                                        0f to peerPredColor.copy(alpha = 0.30f),
+                                        0.55f to peerPredColor.copy(alpha = 0.20f),
+                                        1f to peerPredColor.copy(alpha = 0.04f)
+                                    ),
+                                    startX = startX,
+                                    endX = endX
+                                ),
+                                style = Stroke(
+                                    width = 1.5.dp.toPx(),
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round,
+                                    pathEffect = dashEffect
+                                )
+                            )
+                        }
+                    }
+                }
+
                 // --- 4. MIN/MAX INDICATORS (Restored & Optimized) ---
                 if (endIdx > startIdx) {
                     var minPoint = renderData[startIdx]
@@ -2653,7 +3025,12 @@ fun InteractiveGlucoseChart(
                     }
 
                     if (visibleEventMarkers.isNotEmpty()) {
-                        val eventRailY = (chartHeight - 10.dp.toPx()).coerceAtLeast(8.dp.toPx())
+                        val eventRailY = coerceChartYToDrawableRange(
+                            chartHeight - 10.dp.toPx(),
+                            chartHeight,
+                            8.dp.toPx()
+                        )
+                        val markerEdgeInset = 6.dp.toPx()
                         visibleEventMarkers.forEach { marker ->
                             val markerX = timeToDataX(marker.timestamp)
                             if (markerX !in 0f..dataWidth) return@forEach
@@ -2661,11 +3038,11 @@ fun InteractiveGlucoseChart(
                             val markerY = marker.chartGlucoseValue
                                 ?.let(::valToY)
                                 ?.takeIf { it.isFinite() }
-                                ?.coerceIn(6.dp.toPx(), chartHeight - 6.dp.toPx())
+                                ?.let { coerceChartYToDrawableRange(it, chartHeight, markerEdgeInset) }
                                 ?: marker.chartYFraction
                                     ?.let { fraction -> chartHeight - (fraction.coerceIn(0f, 1f) * chartHeight) }
                                     ?.takeIf { it.isFinite() }
-                                    ?.coerceIn(6.dp.toPx(), chartHeight - 6.dp.toPx())
+                                    ?.let { coerceChartYToDrawableRange(it, chartHeight, markerEdgeInset) }
                                 ?: eventRailY
                             if (marker.type == JournalEntryType.ACTIVITY && marker.durationMinutes != null) {
                                 val endX = timeToDataX(marker.timestamp + marker.durationMinutes.coerceAtLeast(1) * 60_000L)
@@ -2703,11 +3080,12 @@ fun InteractiveGlucoseChart(
                 if (journalActionTimestamp != null && selectedPoint == null && journalActionTimestamp in viewportStart..viewportEnd) {
                     val actionX = timeToDataX(journalActionTimestamp)
                     if (actionX in 0f..width) {
+                        val actionEdgeInset = 12.dp.toPx()
                         val actionMarkerY = journalActionDisplayValue
                             ?.let(::valToY)
                             ?.takeIf { it.isFinite() }
-                            ?.coerceIn(12.dp.toPx(), chartHeight - 12.dp.toPx())
-                            ?: (chartHeight - 12.dp.toPx())
+                            ?.let { coerceChartYToDrawableRange(it, chartHeight, actionEdgeInset) }
+                            ?: coerceChartYToDrawableRange(chartHeight - actionEdgeInset, chartHeight, actionEdgeInset)
                         drawLine(
                             color = primaryColor.copy(alpha = 0.22f + (0.14f * journalActionIndicatorProgress)),
                             start = Offset(actionX, 0f),
@@ -2760,6 +3138,36 @@ fun InteractiveGlucoseChart(
                                  if (py.isFinite()) drawCircle(primaryColor, dotRadius, Offset(cursorX, py))
                              }
                          }
+
+                         peerPointsByBucket[MultiSensorDisplay.bucketKeyForTimestamp(p.timestamp)]
+                             .orEmpty()
+                             .forEach { peer ->
+                                 val attrs = peerDrawAttrs[peer.sensorSerial]
+                                 val peerMode = attrs?.second ?: viewMode
+                                 val peerColor = attrs?.first ?: SensorColors.getColor(peer.sensorSerial.orEmpty())
+                                 val drawPeerRaw = peerMode == 1 || peerMode == 2 || peerMode == 3
+                                 val drawPeerAuto = peerMode == 0 || peerMode == 2 || peerMode == 3
+                                 if (drawPeerRaw && peer.rawValue.isFinite() && peer.rawValue > 0.1f) {
+                                     val py = valToY(peer.rawValue)
+                                     if (py.isFinite()) {
+                                         drawCircle(
+                                             color = peerColor.copy(alpha = if (drawPeerAuto) 0.32f else 0.46f),
+                                             radius = dotRadius * 0.7f,
+                                             center = Offset(cursorX, py)
+                                         )
+                                     }
+                                 }
+                                 if (drawPeerAuto && peer.value.isFinite() && peer.value > 0.1f) {
+                                     val py = valToY(peer.value)
+                                     if (py.isFinite()) {
+                                         drawCircle(
+                                             color = peerColor.copy(alpha = 0.46f),
+                                             radius = dotRadius * 0.75f,
+                                             center = Offset(cursorX, py)
+                                         )
+                                     }
+                                 }
+                             }
                     }
                 }
             }
@@ -3011,11 +3419,14 @@ fun InteractiveGlucoseChart(
                 }
 
             activeInsulinSummary?.let { summary ->
-                val totalUnitsLabel = if (summary.totalUnits % 1f < 0.05f) {
-                    summary.totalUnits.roundToInt().toString()
-                } else {
-                    String.format(java.util.Locale.getDefault(), "%.1f", summary.totalUnits)
+                val unitsLabel = { units: Float ->
+                    if (units % 1f < 0.05f) {
+                        units.roundToInt().toString()
+                    } else {
+                        String.format(java.util.Locale.getDefault(), "%.1f", units)
+                    }
                 }
+                val totalUnitsLabel = unitsLabel(summary.totalUnits)
                 val remainingLabel = summary.nextEndingAt
                     ?.let { formatRemainingDuration(it - System.currentTimeMillis()) }
                     ?.takeIf { it.isNotBlank() }
@@ -3036,16 +3447,18 @@ fun InteractiveGlucoseChart(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "${totalUnitsLabel}U",
+                                text = "IOB ${unitsLabel(summary.iobUnits)}U",
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.SemiBold
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "${summary.weightedActivityPercent}%",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            if (showEiob) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "eIOB ${unitsLabel(summary.eiobUnits)}U",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                             remainingLabel?.let { label ->
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Icon(
@@ -3069,6 +3482,16 @@ fun InteractiveGlucoseChart(
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = buildString {
+                                        append(stringResource(R.string.journal_iob_expanded, unitsLabel(summary.iobUnits)))
+                                        if (showEiob) {
+                                            append(" · ")
+                                            append(stringResource(R.string.journal_eiob_expanded, unitsLabel(summary.eiobUnits)))
+                                        }
+                                    },
+                                    style = MaterialTheme.typography.titleSmall
                                 )
                                 Text(
                                     text = stringResource(
@@ -3134,6 +3557,8 @@ fun InteractiveGlucoseChart(
                     calibratedValueResolver.valueForPoint(point, isRawModeTT).takeIf { it > 0.1f }
                 } else null
                 val dvs = getDisplayValues(point, viewMode, unit, calibratedValueTT)
+                val tooltipPeerPoints = peerPointsByBucket[MultiSensorDisplay.bucketKeyForTimestamp(point.timestamp)]
+                    .orEmpty()
 
                 // --- 1. INFO CARD (Top) ---
                 // "Current Status Card styling" -> primaryContainer
@@ -3152,6 +3577,28 @@ fun InteractiveGlucoseChart(
                         .graphicsLayer { translationX = -size.width / 2f }
                         .widthIn(min = 48.dp)
                         .clip(cardShape) // Clip ripple to match rounded corners
+                        .pointerInput(overlayDataWidthPx, visibleDuration) {
+                            detectDragGestures(
+                                onDragStart = {
+                                    cancelAutoScroll()
+                                    isUserInteracting = true
+                                    markProgrammaticViewportChange()
+                                },
+                                onDragEnd = {
+                                    isUserInteracting = false
+                                    lastInteractionTimestamp = System.currentTimeMillis()
+                                },
+                                onDragCancel = {
+                                    isUserInteracting = false
+                                    lastInteractionTimestamp = System.currentTimeMillis()
+                                }
+                            ) { change, dragAmount ->
+                                if (abs(dragAmount.x) >= abs(dragAmount.y)) {
+                                    change.consume()
+                                    panViewportByPixels(dragAmount.x, overlayDataWidthPx)
+                                }
+                            }
+                        }
                         .pointerInput(constraints.maxHeight) {
                             detectDragGesturesAfterLongPress(
                                 onDragStart = { isAdjustingScrubLabel = true },
@@ -3196,9 +3643,20 @@ fun InteractiveGlucoseChart(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         // Colored Text Logic (Keep matching graph lines for values)
+                        // Multi-sensor: tint the primary value subtly with its
+                        // sensor identity color so it pairs with peer rows below.
+                        val primaryTooltipColor = if (tooltipPeerPoints.isNotEmpty()) {
+                            androidx.compose.ui.graphics.lerp(
+                                statusContentColor,
+                                primaryIdentityColor,
+                                tk.glucodata.SensorVisuals.PRIMARY_TEXT_BLEND
+                            )
+                        } else {
+                            statusContentColor
+                        }
                         val styledText = androidx.compose.ui.text.buildAnnotatedString {
                             // Primary Value
-                            withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                            withStyle(SpanStyle(color = primaryTooltipColor, fontWeight = FontWeight.Bold)) {
                                 append(dvs.primaryStr)
                             }
 
@@ -3227,6 +3685,30 @@ fun InteractiveGlucoseChart(
                             text = styledText,
                             style = MaterialTheme.typography.titleMedium
                         )
+                        tooltipPeerPoints.forEach { peer ->
+                            val attrs = peerDrawAttrs[peer.sensorSerial]
+                            val peerColor = attrs?.first ?: SensorColors.getColor(peer.sensorSerial.orEmpty())
+                            val peerMode = attrs?.second ?: viewMode
+                            val peerTextColor = androidx.compose.ui.graphics.lerp(
+                                statusContentColor,
+                                peerColor,
+                                tk.glucodata.SensorVisuals.PEER_TEXT_BLEND
+                            )
+                            val peerDvs = getDisplayValues(peer, peerMode, unit, calibratedValue = null)
+                            Text(
+                                modifier = Modifier.padding(top = 3.dp),
+                                text = buildGlucoseString(
+                                    peerDvs,
+                                    peerTextColor,
+                                    statusContentColor.copy(alpha = 0.68f),
+                                    statusContentColor.copy(alpha = 0.48f),
+                                    false,
+                                    "",
+                                    statusContentColor.copy(alpha = 0.38f)
+                                ),
+                                style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum")
+                            )
+                        }
                     }
                 }
 
@@ -3243,6 +3725,28 @@ fun InteractiveGlucoseChart(
                             )
                         }
                         .graphicsLayer { translationX = -size.width / 2f }
+                        .pointerInput(overlayDataWidthPx, visibleDuration) {
+                            detectDragGestures(
+                                onDragStart = {
+                                    cancelAutoScroll()
+                                    isUserInteracting = true
+                                    markProgrammaticViewportChange()
+                                },
+                                onDragEnd = {
+                                    isUserInteracting = false
+                                    lastInteractionTimestamp = System.currentTimeMillis()
+                                },
+                                onDragCancel = {
+                                    isUserInteracting = false
+                                    lastInteractionTimestamp = System.currentTimeMillis()
+                                }
+                            ) { change, dragAmount ->
+                                if (abs(dragAmount.x) >= abs(dragAmount.y)) {
+                                    change.consume()
+                                    panViewportByPixels(dragAmount.x, overlayDataWidthPx)
+                                }
+                            }
+                        }
                         .pointerInput(constraints.maxHeight) {
                             detectDragGesturesAfterLongPress(
                                 onDragStart = { isAdjustingScrubLabel = true },
@@ -3700,12 +4204,8 @@ fun InteractiveGlucoseChart(
                                         )
                                     )
                                 } else {
-                                    visibleDuration = rangeDur
+                                    applyTimeRangeDuration(rangeDur)
                                     onTimeRangeSelected?.invoke(range)
-                                    centerTime = liveCenterTimeFor(
-                                        latestDataTimestamp.takeIf { it > 0L } ?: now,
-                                        rangeDur
-                                    )
                                 }
                             },
                         contentAlignment = Alignment.Center

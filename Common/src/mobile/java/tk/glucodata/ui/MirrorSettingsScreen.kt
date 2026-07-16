@@ -53,10 +53,44 @@ import tk.glucodata.ui.components.*
 import tk.glucodata.ui.util.ConnectedButtonGroup
 import tk.glucodata.util.DiscoveredMirror
 import tk.glucodata.util.MDnsManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.InetSocketAddress
+import java.net.Socket
 
 private const val UNIFIED_EXTRA_SCAN_TEXT = "tk.glucodata.extra.scan_text"
 private const val UNIFIED_EXTRA_SCAN_CONTEXT = "tk.glucodata.extra.scan_context"
 private const val UNIFIED_SCAN_CONTEXT_MIRROR = 1
+
+private enum class ConnTestState { IDLE, TESTING, SUCCESS, FAILURE }
+
+// Juggluco mirror protocol handshake (sendmagicinit / receivemagic)
+private val JUGGLUCO_SEND_MAGIC = byteArrayOf(
+    218.toByte(), 173.toByte(), 190.toByte(), 237.toByte(),
+    222.toByte(), 237.toByte(), 190.toByte(), 239.toByte(),
+    209.toByte(), 239.toByte(), 0, 0, 0, 1          // last byte must be non-zero
+)
+private val JUGGLUCO_RECV_MAGIC_PREFIX = byteArrayOf(
+    103, 249.toByte(), 45, 66, 52, 128.toByte(), 40,
+    222.toByte(), 186.toByte(), 129.toByte(), 63    // first 11 bytes of receivemagic
+)
+
+private suspend fun testJugglucoConnection(host: String, port: Int): Boolean =
+    withContext(Dispatchers.IO) {
+        try {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(host, port), 5000)
+                socket.soTimeout = 5000
+                socket.getOutputStream().apply { write(JUGGLUCO_SEND_MAGIC); flush() }
+                val buf = ByteArray(15)
+                val read = socket.getInputStream().read(buf)
+                read >= 11 && buf.copyOf(11).contentEquals(JUGGLUCO_RECV_MAGIC_PREFIX)
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
 
 // ── QR Code ──────────────────────────────────────────────────────────────────
 
@@ -108,7 +142,7 @@ fun injectMirrorJson(jsonstr: String, context: Context): Boolean {
 }
 
 private fun changeHostErrorMessage(context: Context, code: Int): String = when (code) {
-    -1 -> context.getString(R.string.portrange)
+    -1 -> context.getString(R.string.mirror_portrange)
     -2 -> context.getString(R.string.parseip)
     -3 -> context.getString(R.string.toomanyhosts)
     -4 -> context.getString(R.string.senthosts)
@@ -477,10 +511,13 @@ fun MirrorConnectionCard(
     onDelete: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var expanded by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var qrContent by remember { mutableStateOf<String?>(null) }
+    var cardTestState by remember { mutableStateOf(ConnTestState.IDLE) }
     val chevronRotation by animateFloatAsState(if (expanded) 180f else 0f, label = "chevron")
+    LaunchedEffect(expanded) { if (!expanded) cardTestState = ConnTestState.IDLE }
 
     if (qrContent != null) {
         AlertDialog(
@@ -558,6 +595,37 @@ fun MirrorConnectionCard(
                         TextButton(onClick = { qrContent = Natives.getbackJson(mirror.index) }) {
                             Text(stringResource(R.string.qr))
                         }
+                        val testHost = mirror.names?.firstOrNull()?.takeIf { it.isNotBlank() }
+                        if (testHost != null) {
+                            TextButton(
+                                onClick = {
+                                    cardTestState = ConnTestState.TESTING
+                                    scope.launch {
+                                        val portInt = mirror.port?.toIntOrNull() ?: 8795
+                                        cardTestState = if (testJugglucoConnection(testHost, portInt))
+                                            ConnTestState.SUCCESS else ConnTestState.FAILURE
+                                    }
+                                },
+                                enabled = cardTestState != ConnTestState.TESTING,
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = when (cardTestState) {
+                                        ConnTestState.SUCCESS -> Color(0xFF4CAF50)
+                                        ConnTestState.FAILURE -> MaterialTheme.colorScheme.error
+                                        else -> MaterialTheme.colorScheme.primary
+                                    }
+                                )
+                            ) {
+                                if (cardTestState == ConnTestState.TESTING) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(12.dp),
+                                        strokeWidth = 1.5.dp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                }
+                                Text(stringResource(R.string.test))
+                            }
+                        }
                         TextButton(onClick = onEdit) {
                             Text(stringResource(R.string.edit))
                         }
@@ -577,6 +645,8 @@ enum class ConnectionDirection { PASSIVE, ACTIVE, BOTH }
 fun MirrorEditSheet(pos: Int, sheetState: SheetState, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val isNew = pos == -1
+    val scope = rememberCoroutineScope()
+    var testState by remember { mutableStateOf(ConnTestState.IDLE) }
     fun connectionTypeLabel(option: ConnectionType): String = when (option) {
         ConnectionType.LOCAL -> context.getString(R.string.mirror_type_local)
         ConnectionType.ICE -> context.getString(R.string.ice)
@@ -646,12 +716,15 @@ fun MirrorEditSheet(pos: Int, sheetState: SheetState, onDismiss: () -> Unit) {
         }
     )}
 
+    LaunchedEffect(hostname, port, connectionType) { testState = ConnTestState.IDLE }
+
     fun save(): Boolean {
         val isICE = connectionType == ConnectionType.ICE
         val isDirect = connectionType == ConnectionType.DIRECT
         val isLocal = connectionType == ConnectionType.LOCAL
         val finalActiveOnly = direction == ConnectionDirection.ACTIVE
         val finalPassiveOnly = direction == ConnectionDirection.PASSIVE
+        val finalDetect = isLocal && autoDetect && !finalActiveOnly
 
         if (!isSending && !isReceiving) {
             Toast.makeText(context, context.getString(R.string.specifyreceiveordata), Toast.LENGTH_SHORT).show()
@@ -661,7 +734,7 @@ fun MirrorEditSheet(pos: Int, sheetState: SheetState, onDismiss: () -> Unit) {
             Toast.makeText(context, context.getString(R.string.allsentnoreceive), Toast.LENGTH_LONG).show()
             return false
         }
-        if ((isDirect || (isLocal && !autoDetect)) && hostname.isBlank()) {
+        if ((isDirect || (isLocal && !finalDetect)) && hostname.isBlank()) {
             Toast.makeText(context, context.getString(R.string.specifyip), Toast.LENGTH_SHORT).show()
             return false
         }
@@ -676,7 +749,7 @@ fun MirrorEditSheet(pos: Int, sheetState: SheetState, onDismiss: () -> Unit) {
         if (isICE) {
             finalNames = arrayOf("")
             nameCount = 0
-        } else if (isLocal && autoDetect) {
+        } else if (finalDetect) {
             finalNames = arrayOf("")
             nameCount = 0
         } else if (hostname.isNotEmpty()) {
@@ -697,7 +770,7 @@ fun MirrorEditSheet(pos: Int, sheetState: SheetState, onDismiss: () -> Unit) {
             if (isNew) -1 else pos,
             finalNames,
             nameCount,
-            /* detect */ isLocal && autoDetect,
+            /* detect */ finalDetect,
             finalPort,
             /* nums */ isSending,
             /* stream */ isSending,
@@ -709,8 +782,8 @@ fun MirrorEditSheet(pos: Int, sheetState: SheetState, onDismiss: () -> Unit) {
             /* pass */ password.ifEmpty { null },
             /* starttime */ 0L,
             /* label */ connectionLabel.ifEmpty { null },
-            /* testip */ isICE || isDirect,
-            /* hasname */ isDirect,
+            /* testip */ isICE || isDirect || (isLocal && !autoDetect),
+            /* hasname */ isDirect || (isLocal && !autoDetect),
             /* icelabel */ if (isICE) iceLabel else null,
             /* side */ iceSide
         )
@@ -726,7 +799,7 @@ fun MirrorEditSheet(pos: Int, sheetState: SheetState, onDismiss: () -> Unit) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        dragHandle = { BottomSheetDefaults.DragHandle() },
+        dragHandle = { CompactSheetDragHandle() },
     ) {
         Column(
             modifier = Modifier
@@ -768,16 +841,19 @@ fun MirrorEditSheet(pos: Int, sheetState: SheetState, onDismiss: () -> Unit) {
             Column(modifier = Modifier.padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 when (connectionType) {
                     ConnectionType.LOCAL -> {
-                        SettingsSwitchItem(
-                            title = stringResource(R.string.mirror_auto_detect_ip),
-                            subtitle = stringResource(R.string.mirror_auto_detect_ip_desc),
-                            checked = autoDetect,
-                            onCheckedChange = { autoDetect = it },
-                            icon = Icons.Filled.Wifi,
-                            iconTint = MaterialTheme.colorScheme.tertiary,
-                            position = CardPosition.SINGLE
-                        )
-                        if (!autoDetect) {
+                        val localActiveOnly = direction == ConnectionDirection.ACTIVE
+                        if (!localActiveOnly) {
+                            SettingsSwitchItem(
+                                title = stringResource(R.string.mirror_auto_detect_ip),
+                                subtitle = stringResource(R.string.mirror_auto_detect_ip_desc),
+                                checked = autoDetect,
+                                onCheckedChange = { autoDetect = it },
+                                icon = Icons.Filled.Wifi,
+                                iconTint = MaterialTheme.colorScheme.tertiary,
+                                position = CardPosition.SINGLE
+                            )
+                        }
+                        if (localActiveOnly || !autoDetect) {
                             OutlinedTextField(
                                 value = hostname, onValueChange = { hostname = it },
                                 label = { Text(stringResource(R.string.mirror_ip_address)) },
@@ -875,6 +951,60 @@ fun MirrorEditSheet(pos: Int, sheetState: SheetState, onDismiss: () -> Unit) {
                     }
                 }
             )
+
+            // Test connectivity (only for connections with a specific hostname/IP)
+            val canTest = (connectionType == ConnectionType.DIRECT ||
+                    (connectionType == ConnectionType.LOCAL && !autoDetect)) &&
+                    hostname.isNotBlank()
+            if (canTest) {
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            testState = ConnTestState.TESTING
+                            scope.launch {
+                                val portInt = port.toIntOrNull() ?: 8795
+                                testState = if (testJugglucoConnection(hostname.trim(), portInt))
+                                    ConnTestState.SUCCESS else ConnTestState.FAILURE
+                            }
+                        },
+                        enabled = testState != ConnTestState.TESTING,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        if (testState == ConnTestState.TESTING) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(if (testState == ConnTestState.TESTING)
+                            stringResource(R.string.connecting) else stringResource(R.string.test))
+                    }
+                    when (testState) {
+                        ConnTestState.SUCCESS -> {
+                            Icon(Icons.Filled.CheckCircle, contentDescription = null,
+                                tint = Color(0xFF4CAF50), modifier = Modifier.size(24.dp))
+                            Text(stringResource(R.string.status_connected),
+                                color = Color(0xFF4CAF50),
+                                style = MaterialTheme.typography.bodyMedium)
+                        }
+                        ConnTestState.FAILURE -> {
+                            Icon(Icons.Filled.Error, contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(24.dp))
+                            Text(stringResource(R.string.status_connection_failed),
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodyMedium)
+                        }
+                        else -> {}
+                    }
+                }
+            }
 
             // Save
             Spacer(Modifier.height(24.dp))

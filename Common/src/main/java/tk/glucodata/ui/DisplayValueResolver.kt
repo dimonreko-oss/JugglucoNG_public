@@ -13,11 +13,22 @@ data class DisplayValues(
 )
 
 object DisplayValueResolver {
+    private val SPEECH_SAFE_LOCALE = Locale.US
+
     private fun format(value: Float, isMmol: Boolean): String {
         return if (isMmol) {
             String.format(Locale.getDefault(), "%.1f", value)
         } else {
             String.format(Locale.getDefault(), "%.0f", value)
+        }
+    }
+
+    @JvmStatic
+    fun formatForSpeech(value: Float, isMmol: Boolean): String {
+        return if (isMmol) {
+            String.format(SPEECH_SAFE_LOCALE, "%.1f", value)
+        } else {
+            String.format(SPEECH_SAFE_LOCALE, "%.0f", value)
         }
     }
 

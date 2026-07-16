@@ -31,7 +31,6 @@ object AnytimeAlgorithm {
 
     private const val TAG = AnytimeConstants.TAG
     private const val LEGACY_WARMUP_RECORDS = 20
-    private const val ROLLING_NATIVE_MIN_RECORDS = 20
     @Volatile private var officialLatestMissing: Boolean = false
     @Volatile private var officialHistoryMissing: Boolean = false
     @Volatile private var legacyAlgorithmMissing: Boolean = false
@@ -77,9 +76,18 @@ object AnytimeAlgorithm {
         val reVoltageMv: Int = Int.MIN_VALUE,
         val ceVoltageMv: Int = Int.MIN_VALUE,
         val bVoltageMv: Int = Int.MIN_VALUE,
+        /** Official native calibration status; -1 when the native path did not report it. */
+        val calibrationStatus: Int = AnytimeCalibrationPolicy.CALIBRATION_STATUS_UNKNOWN,
     ) {
         val mgdl: Float get() = mgdlTimes10 / 10f
     }
+
+    internal fun shouldAttachReferenceBg(
+        recordGlucoseId: Int,
+        referenceGlucoseId: Int,
+        referenceMgdlTimes10: Int,
+    ): Boolean =
+        referenceGlucoseId in 1..recordGlucoseId && referenceMgdlTimes10 > 0
 
     /**
      * Run the algorithm on a single raw record.
@@ -105,7 +113,9 @@ object AnytimeAlgorithm {
         lastReferenceBgGlucoseId: Int = 0,
         sessionPacketsSinceInit: Int = 0,
         recentRecords: List<AnytimeRawRecord> = listOf(record),
+        recentRecordsProvider: (() -> List<AnytimeRawRecord>)? = null,
         sensorStartTimeMs: Long = 0L,
+        logNativeFallbackWarnings: Boolean = true,
     ): Result {
         val k = qr?.k ?: 0f
         val r = qr?.r ?: 0f
@@ -113,12 +123,17 @@ object AnytimeAlgorithm {
         val linear = computeLinear(record, k, r, family, voltageFlag)
         val calibration = qr?.takeIf { it.isFactoryCalibration }
         if (isNativeAvailable && calibration != null) {
-            val window = recentRecords
-                .filter { it.glucoseId <= record.glucoseId }
-                .distinctBy { it.glucoseId }
-                .sortedBy { it.glucoseId }
-                .ifEmpty { listOf(record) }
-            val contiguousHistory = contiguousHistoryThrough(record, window)
+            var nativeFailure: Result? = null
+            val window by lazy(LazyThreadSafetyMode.NONE) {
+                (recentRecordsProvider?.invoke() ?: recentRecords)
+                    .filter { it.glucoseId <= record.glucoseId }
+                    .distinctBy { it.glucoseId }
+                    .sortedBy { it.glucoseId }
+                    .ifEmpty { listOf(record) }
+            }
+            val contiguousHistory by lazy(LazyThreadSafetyMode.NONE) {
+                contiguousHistoryThrough(record, window)
+            }
             tryOfficialLatest(
                 record = record,
                 calibration = calibration,
@@ -130,12 +145,15 @@ object AnytimeAlgorithm {
                 rawMgdl = linear.rawMgdl,
             )?.let { mapped ->
                 if (isNativeResultUsable(mapped)) return mapped
-                Log.w(
-                    TAG,
-                    "official latest algorithm returned invalid result: id=${mapped.glucoseId} " +
-                            "mmol=${mapped.mmol} mgdl=${mapped.mgdl} trend=${mapped.trend} " +
-                            "err=${mapped.errorCode}; trying history/fallback"
-                )
+                nativeFailure = mapped
+                if (logNativeFallbackWarnings) {
+                    Log.w(
+                        TAG,
+                        "official latest algorithm returned invalid result: id=${mapped.glucoseId} " +
+                                "mmol=${mapped.mmol} mgdl=${mapped.mgdl} trend=${mapped.trend} " +
+                                "err=${mapped.errorCode}; trying history algorithm"
+                    )
+                }
             }
             tryOfficialHistory(
                 record = record,
@@ -150,12 +168,15 @@ object AnytimeAlgorithm {
                 rawMgdl = linear.rawMgdl,
             )?.let { mapped ->
                 if (isNativeResultUsable(mapped)) return mapped
-                Log.w(
-                    TAG,
-                    "official history algorithm returned invalid result: id=${mapped.glucoseId} " +
-                            "mmol=${mapped.mmol} mgdl=${mapped.mgdl} trend=${mapped.trend} " +
-                            "err=${mapped.errorCode}; using fallback"
-                )
+                nativeFailure = mapped
+                if (logNativeFallbackWarnings) {
+                    Log.w(
+                        TAG,
+                        "official history algorithm returned invalid result: id=${mapped.glucoseId} " +
+                                "mmol=${mapped.mmol} mgdl=${mapped.mgdl} trend=${mapped.trend} " +
+                                "err=${mapped.errorCode}; keeping native failure"
+                    )
+                }
             }
             tryLegacyNative(
                 record = record,
@@ -170,60 +191,16 @@ object AnytimeAlgorithm {
                 rawMgdl = linear.rawMgdl,
             )?.let { mapped ->
                 if (isNativeResultUsable(mapped)) return mapped
+                nativeFailure = mapped
                 val msg = "legacy native algorithm returned invalid result: id=${mapped.glucoseId} " +
                         "mmol=${mapped.mmol} mgdl=${mapped.mgdl} trend=${mapped.trend} " +
-                        "err=${mapped.errorCode}; using linear fallback"
-                if (mapped.glucoseId >= LEGACY_WARMUP_RECORDS) {
+                        "err=${mapped.errorCode}; keeping native failure"
+                if (logNativeFallbackWarnings && mapped.glucoseId >= LEGACY_WARMUP_RECORDS) {
                     Log.w(TAG, msg)
                 }
             }
+            nativeFailure?.let { return it }
 
-            // Fresh CT4 startup often has only the newest tail (for example ids
-            // 561..584) while the old prefix 0..560 is still loading. The
-            // legacy JNI does not require the absolute transmitter id; it needs
-            // a contiguous algorithm window whose glucoseId indexes that window.
-            // Try a remapped rolling tail so Auto can become native as soon as
-            // the recent window is loaded, instead of waiting for the full day
-            // prefix to finish. Raw lane remains the simple linear value.
-            val rollingTail = contiguousTailEndingAt(record, window)
-            if (rollingTail.size >= ROLLING_NATIVE_MIN_RECORDS && rollingTail.size > contiguousHistory.size) {
-                val rollingStartTimeMs = estimateRollingStartTimeMs(
-                    originalRecord = record,
-                    firstRecord = rollingTail.first(),
-                    sampleTimeMs = sampleTimeMs,
-                    sensorStartTimeMs = sensorStartTimeMs,
-                )
-                tryOfficialHistory(
-                    record = record,
-                    calibration = calibration,
-                    family = family,
-                    sensorIdName = sensorIdName,
-                    sampleTimeMs = sampleTimeMs,
-                    lastReferenceBgMgdlTimes10 = lastReferenceBgMgdlTimes10,
-                    lastReferenceBgGlucoseId = remapEventIdForWindow(lastReferenceBgGlucoseId, rollingTail),
-                    window = rollingTail,
-                    sensorStartTimeMs = rollingStartTimeMs,
-                    rawMgdl = linear.rawMgdl,
-                    algorithmGlucoseId = rollingTail.size - 1,
-                )?.let { mapped ->
-                    if (isNativeResultUsable(mapped)) return mapped
-                }
-                tryLegacyNative(
-                    record = record,
-                    calibration = calibration,
-                    family = family,
-                    sensorIdName = sensorIdName,
-                    sampleTimeMs = sampleTimeMs,
-                    lastReferenceBgMgdlTimes10 = lastReferenceBgMgdlTimes10,
-                    lastReferenceBgGlucoseId = remapEventIdForWindow(lastReferenceBgGlucoseId, rollingTail),
-                    window = rollingTail,
-                    sensorStartTimeMs = rollingStartTimeMs,
-                    rawMgdl = linear.rawMgdl,
-                    algorithmGlucoseId = rollingTail.size - 1,
-                )?.let { mapped ->
-                    if (isNativeResultUsable(mapped)) return mapped
-                }
-            }
         } else if (isNativeAvailable && qr != null && !nativeSkippedNoFactoryLogged) {
             nativeSkippedNoFactoryLogged = true
             Log.w(
@@ -258,7 +235,7 @@ object AnytimeAlgorithm {
                 setSensorInfo(calibration.rawQr)
                 setTransmitterName(sensorIdName, calibration.voltageFlag)
                 setAlgorithm(nativeAlgorithm(family, calibration.voltageFlag))
-                if (lastReferenceBgGlucoseId > 0 && lastReferenceBgMgdlTimes10 > 0) {
+                if (shouldAttachReferenceBg(record.glucoseId, lastReferenceBgGlucoseId, lastReferenceBgMgdlTimes10)) {
                     setNewBgToGlucoseId(lastReferenceBgGlucoseId)
                     setNewBgValue(lastReferenceBgMgdlTimes10 / 10)
                 }
@@ -294,7 +271,7 @@ object AnytimeAlgorithm {
         return runCatching {
             val eventIds: IntArray
             val bgValues: IntArray
-            if (lastReferenceBgGlucoseId > 0 && lastReferenceBgMgdlTimes10 > 0) {
+            if (shouldAttachReferenceBg(record.glucoseId, lastReferenceBgGlucoseId, lastReferenceBgMgdlTimes10)) {
                 eventIds = intArrayOf(lastReferenceBgGlucoseId)
                 bgValues = intArrayOf(lastReferenceBgMgdlTimes10 / 10)
             } else {
@@ -346,7 +323,7 @@ object AnytimeAlgorithm {
         return runCatching {
             val eventIds: IntArray?
             val bgValues: IntArray?
-            if (lastReferenceBgGlucoseId > 0 && lastReferenceBgMgdlTimes10 > 0) {
+            if (shouldAttachReferenceBg(record.glucoseId, lastReferenceBgGlucoseId, lastReferenceBgMgdlTimes10)) {
                 eventIds = intArrayOf(lastReferenceBgGlucoseId)
                 bgValues = intArrayOf(lastReferenceBgMgdlTimes10 / 10)
             } else {
@@ -394,46 +371,6 @@ object AnytimeAlgorithm {
             out.add(rec)
         }
         return out
-    }
-
-    private fun contiguousTailEndingAt(
-        record: AnytimeRawRecord,
-        sortedRecords: List<AnytimeRawRecord>,
-    ): List<AnytimeRawRecord> {
-        if (record.glucoseId < 0) return emptyList()
-        val byId = sortedRecords.associateBy { it.glucoseId }
-        val out = ArrayList<AnytimeRawRecord>()
-        var id = record.glucoseId
-        while (id >= 0) {
-            val rec = byId[id] ?: break
-            out.add(rec)
-            id--
-        }
-        out.reverse()
-        return out
-    }
-
-    private fun remapEventIdForWindow(eventId: Int, window: List<AnytimeRawRecord>): Int {
-        if (eventId <= 0 || window.isEmpty()) return 0
-        val first = window.first().glucoseId
-        val last = window.last().glucoseId
-        return if (eventId in first..last) eventId - first else 0
-    }
-
-    private fun estimateRollingStartTimeMs(
-        originalRecord: AnytimeRawRecord,
-        firstRecord: AnytimeRawRecord,
-        sampleTimeMs: Long,
-        sensorStartTimeMs: Long,
-    ): Long {
-        val idDelta = originalRecord.glucoseId - firstRecord.glucoseId
-        if (idDelta <= 0) return sampleTimeMs
-        val estimatedIntervalMs = if (sensorStartTimeMs > 0L && originalRecord.glucoseId > 0) {
-            ((sampleTimeMs - sensorStartTimeMs) / originalRecord.glucoseId.toLong()).coerceAtLeast(60_000L)
-        } else {
-            3L * 60L * 1000L
-        }
-        return sampleTimeMs - idDelta.toLong() * estimatedIntervalMs
     }
 
     /** Linear K/R fallback. */
@@ -580,6 +517,7 @@ object AnytimeAlgorithm {
             reVoltageMv = native.reVoltage,
             ceVoltageMv = native.ceVoltage,
             bVoltageMv = native.bVoltage,
+            calibrationStatus = native.calibrationStatus,
         )
     }
 
@@ -597,6 +535,7 @@ object AnytimeAlgorithm {
             warnCode = native.warnCode,
             source = Source.NATIVE,
             rawMgdl = rawMgdl,
+            calibrationStatus = native.calibrationStatus,
         )
     }
 
@@ -614,18 +553,20 @@ object AnytimeAlgorithm {
     }
 
     private fun nativeAlgorithm(family: AnytimeConstants.FamilyEntry, voltageFlag: Int): Int {
-        val switchable = when (family.family) {
+        return when (family.family) {
             AnytimeConstants.Family.CT3,
             AnytimeConstants.Family.CT3_PLUS,
             AnytimeConstants.Family.CT3_YUWELL,
-            AnytimeConstants.Family.CT3_ULTRASONIC,
-            AnytimeConstants.Family.CT4 -> true
-            else -> false
-        }
-        if (!switchable) return family.algorithm
-        return when {
-            family.algorithm == 10 && voltageFlag == 0 -> 3
-            family.algorithm == 3 && voltageFlag == 1 -> 10
+            AnytimeConstants.Family.CT3_ULTRASONIC -> when {
+                (family.algorithm == 12 || family.algorithm == 9) && voltageFlag == 0 -> 3
+                family.algorithm == 3 && voltageFlag == 1 -> 9
+                else -> family.algorithm
+            }
+            AnytimeConstants.Family.CT4 -> when {
+                family.algorithm == 10 && voltageFlag == 0 -> 3
+                family.algorithm == 3 && voltageFlag == 1 -> 10
+                else -> family.algorithm
+            }
             else -> family.algorithm
         }
     }

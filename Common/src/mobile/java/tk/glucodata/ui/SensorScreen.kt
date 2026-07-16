@@ -158,7 +158,6 @@ import tk.glucodata.ui.journal.JournalDoseProfile
 import tk.glucodata.ui.journal.JournalEntrySheet
 import tk.glucodata.ui.journal.JournalInlineChip
 import tk.glucodata.ui.journal.JournalSettingsScreen
-import tk.glucodata.ui.journal.buildActiveInsulinSummary
 import tk.glucodata.ui.journal.buildJournalChartMarkers
 import tk.glucodata.ui.journal.journalTypeColor
 import tk.glucodata.ui.journal.journalTypeSelectedContainerColor
@@ -264,7 +263,7 @@ fun SensorScreen(
     val panelBottomPadding = if (compactLayout) 88.dp else 100.dp
     val titleStyle = if (compactLayout) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.displaySmall
     val titleBottomPadding = if (compactLayout) 16.dp else 24.dp
-    val fabPadding = if (compactLayout) 12.dp else 16.dp
+    val fabPadding = 20.dp
     
     // Start/stop real-time polling based on screen visibility
     DisposableEffect(Unit) {
@@ -285,6 +284,7 @@ fun SensorScreen(
     var showICanHealthWizard by remember { mutableStateOf(false) }
     var showMQWizard by remember { mutableStateOf(false) }
     var showAnytimeWizard by remember { mutableStateOf(false) }
+    var showOttaiWizard by remember { mutableStateOf(false) }
 
     // Sensor Type Picker Bottom Sheet
     if (showSensorPicker) {
@@ -302,6 +302,7 @@ fun SensorScreen(
                     tk.glucodata.ui.components.SensorType.ICANHEALTH -> showICanHealthWizard = true
                     tk.glucodata.ui.components.SensorType.MQ -> showMQWizard = true
                     tk.glucodata.ui.components.SensorType.ANYTIME -> showAnytimeWizard = true
+                    tk.glucodata.ui.components.SensorType.OTTAI -> showOttaiWizard = true
                 }
             }
         )
@@ -311,6 +312,7 @@ fun SensorScreen(
     if (showSibionicsWizard) {
         tk.glucodata.ui.setup.SibionicsSetupWizard(
             onDismiss = { showSibionicsWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onComplete = {
                 showSibionicsWizard = false
                 viewModel.refreshSensors()
@@ -323,6 +325,7 @@ fun SensorScreen(
     if (showLibreWizard) {
         tk.glucodata.ui.setup.LibreSetupWizard(
             onDismiss = { showLibreWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onScanNfc = {
                 showLibreWizard = false
                 tk.glucodata.MainActivity.launchLibreNfcScan()
@@ -337,6 +340,7 @@ fun SensorScreen(
             onDismiss = {
                 showDexcomWizard = false
             },
+            onNavigateToReadiness = onNavigateToReadiness,
             onScanResult = { raw ->
                 tk.glucodata.MainActivity.handleInlineQrScan(raw, tk.glucodata.MainActivity.REQUEST_BARCODE)
                 showDexcomWizard = false
@@ -351,6 +355,7 @@ fun SensorScreen(
             onDismiss = {
                 showAccuChekWizard = false
             },
+            onNavigateToReadiness = onNavigateToReadiness,
             onScanResult = { raw ->
                 tk.glucodata.MainActivity.handleInlineQrScan(raw, tk.glucodata.MainActivity.REQUEST_BARCODE)
                 showAccuChekWizard = false
@@ -365,6 +370,7 @@ fun SensorScreen(
             onDismiss = {
                 showCareSensAirWizard = false
             },
+            onNavigateToReadiness = onNavigateToReadiness,
             onScanResult = { raw ->
                 tk.glucodata.MainActivity.handleInlineQrScan(raw, tk.glucodata.MainActivity.REQUEST_BARCODE)
                 showCareSensAirWizard = false
@@ -377,6 +383,7 @@ fun SensorScreen(
     if (showAiDexWizard) {
         tk.glucodata.ui.setup.AiDexSetupWizard(
             onDismiss = { showAiDexWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onComplete = {
                 showAiDexWizard = false
                 viewModel.refreshSensors()
@@ -388,6 +395,7 @@ fun SensorScreen(
     if (showICanHealthWizard) {
         tk.glucodata.ui.setup.ICanHealthSetupWizard(
             onDismiss = { showICanHealthWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onComplete = {
                 showICanHealthWizard = false
                 viewModel.refreshSensors()
@@ -400,6 +408,7 @@ fun SensorScreen(
     if (showMQWizard) {
         tk.glucodata.ui.setup.MQSetupWizard(
             onDismiss = { showMQWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onComplete = {
                 showMQWizard = false
                 viewModel.refreshSensors()
@@ -412,8 +421,21 @@ fun SensorScreen(
     if (showAnytimeWizard) {
         tk.glucodata.ui.setup.AnytimeSetupWizard(
             onDismiss = { showAnytimeWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onComplete = {
                 showAnytimeWizard = false
+                viewModel.refreshSensors()
+            },
+        )
+        return
+    }
+
+    // Ottai Setup Wizard
+    if (showOttaiWizard) {
+        tk.glucodata.ui.setup.OttaiSetupWizard(
+            onDismiss = { showOttaiWizard = false },
+            onComplete = {
+                showOttaiWizard = false
                 viewModel.refreshSensors()
             },
         )
@@ -452,6 +474,7 @@ fun SensorScreen(
                             tk.glucodata.ui.components.SensorType.ICANHEALTH -> showICanHealthWizard = true
                             tk.glucodata.ui.components.SensorType.MQ -> showMQWizard = true
                             tk.glucodata.ui.components.SensorType.ANYTIME -> showAnytimeWizard = true
+                            tk.glucodata.ui.components.SensorType.OTTAI -> showOttaiWizard = true
                         }
                     }
                 )
@@ -500,6 +523,7 @@ fun SensorScreen(
                 onClick = { showSensorPicker = true },
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                shape = RoundedCornerShape(20.dp),
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(fabPadding)

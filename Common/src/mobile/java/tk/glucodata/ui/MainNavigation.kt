@@ -15,10 +15,13 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.LegendToggle
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.outlined.BarChart
+import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.LegendToggle
 import androidx.compose.material.icons.outlined.Sensors
 import androidx.compose.material.icons.outlined.Settings
@@ -30,6 +33,10 @@ import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,10 +45,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -53,16 +62,26 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import tk.glucodata.R
+import tk.glucodata.SensorIdentity
 import tk.glucodata.data.journal.JournalEntry
 import tk.glucodata.data.journal.JournalEntryType
 import tk.glucodata.ui.journal.JournalDoseProfile
 import tk.glucodata.ui.journal.JournalEntrySheet
+import tk.glucodata.ui.journal.JournalFoodLibraryScreen
+import tk.glucodata.ui.journal.JournalInsulinLibraryScreen
+import tk.glucodata.ui.journal.JournalScreen
 import tk.glucodata.ui.journal.JournalSettingsScreen
 import tk.glucodata.ui.viewmodel.DashboardViewModel
 
 sealed class CalibrationSheetState {
     object Hidden : CalibrationSheetState()
-    data class New(val auto: Float, val raw: Float, val timestamp: Long) : CalibrationSheetState()
+    data class New(
+        val auto: Float,
+        val raw: Float,
+        val timestamp: Long,
+        val sensorId: String,
+        val viewModeOverride: Int? = null
+    ) : CalibrationSheetState()
     data class Edit(val entity: tk.glucodata.data.calibration.CalibrationEntity) : CalibrationSheetState()
 }
 
@@ -97,14 +116,19 @@ private fun DashboardRoute(
 @Composable
 private fun HistoryRoute(
     dashboardViewModel: DashboardViewModel,
-    onBack: () -> Unit,
-    onTriggerCalibration: (CalibrationSheetState) -> Unit
+    title: String,
+    browseMode: TimelineBrowseMode,
+    onBack: (() -> Unit)?,
+    onTriggerCalibration: (CalibrationSheetState) -> Unit,
+//    initialShowReadingRows: Boolean = true
 ) {
     // Use the merged multi-sensor flow so the previous sensor's calibrated
     // readings (and any imported/older sensor data) remain visible on the
     // History screen across sensor swaps. The dashboard chart still uses the
     // narrower per-sensor [glucoseHistory] flow above.
-    val glucoseHistory by dashboardViewModel.historyScreenGlucoseHistory.collectAsStateWithLifecycle()
+    val mergedGlucoseHistory by dashboardViewModel.historyScreenGlucoseHistory.collectAsStateWithLifecycle()
+    val dashboardGlucoseHistory by dashboardViewModel.glucoseHistory.collectAsStateWithLifecycle()
+    val glucoseHistory = mergedGlucoseHistory.ifEmpty { dashboardGlucoseHistory }
     val unit by dashboardViewModel.unit.collectAsStateWithLifecycle()
     val viewMode by dashboardViewModel.viewMode.collectAsStateWithLifecycle()
     val sensorName by dashboardViewModel.sensorName.collectAsStateWithLifecycle()
@@ -114,11 +138,16 @@ private fun HistoryRoute(
     val targetHigh by dashboardViewModel.targetHigh.collectAsStateWithLifecycle()
     val chartSmoothingMinutes by dashboardViewModel.chartSmoothingMinutes.collectAsStateWithLifecycle()
     val dataSmoothingCollapseChunks by dashboardViewModel.dataSmoothingCollapseChunks.collectAsStateWithLifecycle()
+    val dataSmoothingExchangeOnly by dashboardViewModel.dataSmoothingExchangeOnly.collectAsStateWithLifecycle()
+    val visualSmoothingMinutes = if (dataSmoothingExchangeOnly) 0 else chartSmoothingMinutes
     val previewWindowMode by dashboardViewModel.previewWindowMode.collectAsStateWithLifecycle()
     val journalEnabled by dashboardViewModel.journalEnabled.collectAsStateWithLifecycle()
     val journalDoseCalculatorEnabled by dashboardViewModel.journalDoseCalculatorEnabled.collectAsStateWithLifecycle()
+    val journalFoodMacrosEnabled by dashboardViewModel.journalFoodMacrosEnabled.collectAsStateWithLifecycle()
     val journalEntries by dashboardViewModel.journalEntries.collectAsStateWithLifecycle()
     val journalInsulinPresets by dashboardViewModel.journalInsulinPresets.collectAsStateWithLifecycle()
+    val journalFoods by dashboardViewModel.journalFoods.collectAsStateWithLifecycle()
+    val appChartRangeColorsEnabled by dashboardViewModel.glucoseAppChartRangeColorsEnabled.collectAsStateWithLifecycle()
     val predictionCarbRatioGramsPerUnit by dashboardViewModel.predictionCarbRatioGramsPerUnit.collectAsStateWithLifecycle()
     val predictionInsulinSensitivityMgDlPerUnit by dashboardViewModel.predictionInsulinSensitivityMgDlPerUnit.collectAsStateWithLifecycle()
     val calibrations by tk.glucodata.data.calibration.CalibrationManager.calibrations.collectAsStateWithLifecycle()
@@ -140,18 +169,28 @@ private fun HistoryRoute(
         graphHigh = graphHigh,
         targetLow = targetLow,
         targetHigh = targetHigh,
-        graphSmoothingMinutes = chartSmoothingMinutes,
+        graphSmoothingMinutes = visualSmoothingMinutes,
         collapseSmoothedData = dataSmoothingCollapseChunks,
         previewWindowMode = previewWindowMode,
         calibrations = calibrations,
-        title = stringResource(R.string.historyname),
-        browseMode = TimelineBrowseMode.HISTORY,
+        title = title,
+        browseMode = browseMode,
+        chartRangeColors = appChartRangeColorsEnabled,
+//        initialShowReadingRows = initialShowReadingRows,
         journalEnabled = journalEnabled,
         journalEntries = scopedJournalEntries,
         journalInsulinPresets = journalInsulinPresets,
+        journalFoods = journalFoods,
         onBack = onBack,
         onPointClick = { point ->
-            onTriggerCalibration(CalibrationSheetState.New(point.value, point.rawValue, point.timestamp))
+            onTriggerCalibration(
+                CalibrationSheetState.New(
+                    point.value,
+                    point.rawValue,
+                    point.timestamp,
+                    point.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                )
+            )
         },
         onDeleteReading = { point ->
             dashboardViewModel.deleteHistoryReading(point, sensorName)
@@ -188,11 +227,14 @@ private fun HistoryRoute(
             suggestedChartAnchorGlucoseMgDl = request.suggestedChartAnchorGlucoseMgDl,
             suggestedAmountFraction = request.suggestedAmountFraction,
             insulinPresets = journalInsulinPresets,
+            foods = journalFoods,
+            foodMacrosEnabled = journalFoodMacrosEnabled,
             doseJournalEntries = scopedJournalEntries,
             doseProfile = JournalDoseProfile(
                 enabled = journalEnabled && journalDoseCalculatorEnabled,
                 carbRatioGramsPerUnit = predictionCarbRatioGramsPerUnit,
                 insulinSensitivityMgDlPerUnit = predictionInsulinSensitivityMgDlPerUnit,
+                foodMacrosEnabled = journalFoodMacrosEnabled,
                 targetHighMgDl = if (tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit)) {
                     tk.glucodata.ui.util.GlucoseFormatter.mmolToMg(targetHigh)
                 } else {
@@ -212,11 +254,199 @@ private fun HistoryRoute(
                 inputs.firstOrNull()?.let { lastJournalType = it.type }
                 journalEditorRequest = null
             },
+            onSaveFood = dashboardViewModel::saveJournalFood,
             onDelete = { entryId ->
                 dashboardViewModel.deleteJournalEntry(entryId)
                 journalEditorRequest = null
             },
             sensorSerialProvider = { sensorName.ifBlank { null } }
+        )
+    }
+}
+
+@Composable
+private fun JournalRoute(
+    dashboardViewModel: DashboardViewModel,
+    navController: androidx.navigation.NavController,
+    onTriggerCalibration: (CalibrationSheetState) -> Unit,
+    modifier: Modifier = Modifier,
+    showTitle: Boolean = true,
+    useStatusBarsPadding: Boolean = true,
+    bottomContentPadding: Dp = 104.dp
+) {
+    val mergedGlucoseHistory by dashboardViewModel.historyScreenGlucoseHistory.collectAsStateWithLifecycle()
+    val dashboardGlucoseHistory by dashboardViewModel.glucoseHistory.collectAsStateWithLifecycle()
+    val glucoseHistory = mergedGlucoseHistory.ifEmpty { dashboardGlucoseHistory }
+    val unit by dashboardViewModel.unit.collectAsStateWithLifecycle()
+    val viewMode by dashboardViewModel.viewMode.collectAsStateWithLifecycle()
+    val sensorName by dashboardViewModel.sensorName.collectAsStateWithLifecycle()
+    val graphLow by dashboardViewModel.graphLow.collectAsStateWithLifecycle()
+    val graphHigh by dashboardViewModel.graphHigh.collectAsStateWithLifecycle()
+    val targetLow by dashboardViewModel.targetLow.collectAsStateWithLifecycle()
+    val targetHigh by dashboardViewModel.targetHigh.collectAsStateWithLifecycle()
+    val chartSmoothingMinutes by dashboardViewModel.chartSmoothingMinutes.collectAsStateWithLifecycle()
+    val dataSmoothingCollapseChunks by dashboardViewModel.dataSmoothingCollapseChunks.collectAsStateWithLifecycle()
+    val dataSmoothingExchangeOnly by dashboardViewModel.dataSmoothingExchangeOnly.collectAsStateWithLifecycle()
+    val visualSmoothingMinutes = if (dataSmoothingExchangeOnly) 0 else chartSmoothingMinutes
+    val previewWindowMode by dashboardViewModel.previewWindowMode.collectAsStateWithLifecycle()
+    val journalEnabled by dashboardViewModel.journalEnabled.collectAsStateWithLifecycle()
+    val journalDoseCalculatorEnabled by dashboardViewModel.journalDoseCalculatorEnabled.collectAsStateWithLifecycle()
+    val journalFoodMacrosEnabled by dashboardViewModel.journalFoodMacrosEnabled.collectAsStateWithLifecycle()
+    val journalEntries by dashboardViewModel.journalEntries.collectAsStateWithLifecycle()
+    val journalInsulinPresets by dashboardViewModel.journalInsulinPresets.collectAsStateWithLifecycle()
+    val journalFoods by dashboardViewModel.journalFoods.collectAsStateWithLifecycle()
+    val journalEiobDisplayEnabled by dashboardViewModel.journalEiobDisplayEnabled.collectAsStateWithLifecycle()
+    val appChartRangeColorsEnabled by dashboardViewModel.glucoseAppChartRangeColorsEnabled.collectAsStateWithLifecycle()
+    val predictionCarbRatioGramsPerUnit by dashboardViewModel.predictionCarbRatioGramsPerUnit.collectAsStateWithLifecycle()
+    val predictionInsulinSensitivityMgDlPerUnit by dashboardViewModel.predictionInsulinSensitivityMgDlPerUnit.collectAsStateWithLifecycle()
+    val calibrations by tk.glucodata.data.calibration.CalibrationManager.calibrations.collectAsStateWithLifecycle()
+    var journalEditorRequest by remember { mutableStateOf<JournalEditorRequest?>(null) }
+    var lastJournalType by rememberSaveable { mutableStateOf(JournalEntryType.INSULIN) }
+
+    fun openJournalEditor(
+        timestamp: Long,
+        suggestedType: JournalEntryType?,
+        suggestedDisplayGlucose: Float?,
+        suggestedAmountFraction: Float? = null
+    ) {
+        val type = suggestedType ?: lastJournalType
+        val suggestedGlucoseMgDl = suggestedDisplayGlucose?.let {
+            if (tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit)) {
+                tk.glucodata.ui.util.GlucoseFormatter.mmolToMg(it)
+            } else {
+                it
+            }
+        }
+        lastJournalType = type
+        journalEditorRequest = JournalEditorRequest(
+            type = type,
+            timestamp = timestamp,
+            suggestedGlucoseMgDl = suggestedGlucoseMgDl,
+            suggestedChartAnchorGlucoseMgDl = suggestedGlucoseMgDl
+                .takeIf { type == JournalEntryType.FINGERSTICK || suggestedAmountFraction != null },
+            suggestedAmountFraction = suggestedAmountFraction
+        )
+    }
+
+    JournalScreen(
+        glucoseHistory = glucoseHistory,
+        unit = unit,
+        viewMode = viewMode,
+        graphLow = graphLow,
+        graphHigh = graphHigh,
+        targetLow = targetLow,
+        targetHigh = targetHigh,
+        graphSmoothingMinutes = visualSmoothingMinutes,
+        collapseSmoothedData = dataSmoothingCollapseChunks,
+        previewWindowMode = previewWindowMode,
+        calibrations = calibrations,
+        journalEntries = journalEntries,
+        journalInsulinPresets = journalInsulinPresets,
+        journalFoods = journalFoods,
+        sensorId = sensorName,
+        onPointClick = { point ->
+            onTriggerCalibration(
+                CalibrationSheetState.New(
+                    point.value,
+                    point.rawValue,
+                    point.timestamp,
+                    point.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                )
+            )
+        },
+        onJournalEntryClick = { entry ->
+            lastJournalType = entry.type
+            journalEditorRequest = JournalEditorRequest(entry.type, entry.timestamp, entry)
+        },
+        onAddJournalEntry = { timestamp, suggestedType, suggestedDisplayGlucose, suggestedAmountFraction ->
+            openJournalEditor(timestamp, suggestedType, suggestedDisplayGlucose, suggestedAmountFraction)
+        },
+        onOpenFoodLibrary = { navController.navigate("settings/journal/foods") },
+        onOpenInsulinLibrary = { navController.navigate("settings/journal/insulin") },
+        modifier = modifier,
+        showTitle = showTitle,
+        useStatusBarsPadding = useStatusBarsPadding,
+        bottomContentPadding = bottomContentPadding,
+        showEiob = journalEiobDisplayEnabled,
+        chartRangeColors = appChartRangeColorsEnabled
+    )
+
+    journalEditorRequest?.let { request ->
+        JournalEntrySheet(
+            unit = unit,
+            selectedTimestamp = request.timestamp,
+            suggestedGlucoseMgDl = request.suggestedGlucoseMgDl,
+            suggestedChartAnchorGlucoseMgDl = request.suggestedChartAnchorGlucoseMgDl,
+            suggestedAmountFraction = request.suggestedAmountFraction,
+            insulinPresets = journalInsulinPresets,
+            foods = journalFoods,
+            foodMacrosEnabled = journalFoodMacrosEnabled,
+            doseJournalEntries = journalEntries,
+            doseProfile = JournalDoseProfile(
+                enabled = journalEnabled && journalDoseCalculatorEnabled,
+                carbRatioGramsPerUnit = predictionCarbRatioGramsPerUnit,
+                insulinSensitivityMgDlPerUnit = predictionInsulinSensitivityMgDlPerUnit,
+                foodMacrosEnabled = journalFoodMacrosEnabled,
+                targetHighMgDl = if (tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit)) {
+                    tk.glucodata.ui.util.GlucoseFormatter.mmolToMg(targetHigh)
+                } else {
+                    targetHigh
+                }
+            ),
+            initialType = request.type,
+            existingEntry = request.existingEntry,
+            onDismiss = { journalEditorRequest = null },
+            onSave = { input ->
+                dashboardViewModel.saveJournalEntry(input)
+                lastJournalType = input.type
+                journalEditorRequest = null
+            },
+            onSaveEntries = { inputs ->
+                inputs.forEach(dashboardViewModel::saveJournalEntry)
+                inputs.firstOrNull()?.let { lastJournalType = it.type }
+                journalEditorRequest = null
+            },
+            onSaveFood = dashboardViewModel::saveJournalFood,
+            onDelete = { entryId ->
+                dashboardViewModel.deleteJournalEntry(entryId)
+                journalEditorRequest = null
+            },
+            sensorSerialProvider = { sensorName.ifBlank { null } }
+        )
+    }
+}
+
+@Composable
+private fun JournalSettingsHistoryRoute(
+    dashboardViewModel: DashboardViewModel,
+    navController: androidx.navigation.NavController,
+    onTriggerCalibration: (CalibrationSheetState) -> Unit
+) {
+    Scaffold(
+        contentWindowInsets = WindowInsets(0.dp),
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.journal_title)) },
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.navigate_back)
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+            )
+        }
+    ) { padding ->
+        JournalRoute(
+            dashboardViewModel = dashboardViewModel,
+            navController = navController,
+            onTriggerCalibration = onTriggerCalibration,
+            modifier = Modifier.padding(padding),
+            showTitle = false,
+            useStatusBarsPadding = false,
+            bottomContentPadding = 28.dp
         )
     }
 }
@@ -231,6 +461,7 @@ private fun CalibrationListRoute(
     val unit by dashboardViewModel.unit.collectAsStateWithLifecycle()
     val viewMode by dashboardViewModel.viewMode.collectAsStateWithLifecycle()
     val currentGlucose by dashboardViewModel.currentGlucose.collectAsStateWithLifecycle()
+    val sensorName by dashboardViewModel.sensorName.collectAsStateWithLifecycle()
 
     val isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit)
 
@@ -238,12 +469,50 @@ private fun CalibrationListRoute(
         navController = navController,
         isMmol = isMmol,
         viewMode = viewMode,
+        sensorId = sensorName,
         onAdd = {
             val latest = glucoseHistory.firstOrNull()
             val autoVal = latest?.value ?: tk.glucodata.GlucoseValueParser.parseFirstOrZero(currentGlucose)
             val rawVal = latest?.rawValue ?: autoVal
-            onTriggerCalibration(CalibrationSheetState.New(autoVal, rawVal, System.currentTimeMillis()))
+            onTriggerCalibration(
+                CalibrationSheetState.New(
+                    autoVal,
+                    rawVal,
+                    latest?.timestamp ?: System.currentTimeMillis(),
+                    latest?.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                )
+            )
         },
+        onEdit = { entity ->
+            onTriggerCalibration(CalibrationSheetState.Edit(entity))
+        },
+        onOpenModelTable = {
+            val current = navController.currentDestination?.route
+            val route = if (current?.startsWith("settings/") == true) {
+                "settings/calibrations/model-table"
+            } else {
+                "calibrations/model-table"
+            }
+            navController.navigate(route)
+        }
+    )
+}
+
+@Composable
+private fun CalibrationModelTableRoute(
+    dashboardViewModel: DashboardViewModel,
+    navController: androidx.navigation.NavController,
+    onTriggerCalibration: (CalibrationSheetState) -> Unit
+) {
+    val unit by dashboardViewModel.unit.collectAsStateWithLifecycle()
+    val viewMode by dashboardViewModel.viewMode.collectAsStateWithLifecycle()
+    val sensorName by dashboardViewModel.sensorName.collectAsStateWithLifecycle()
+
+    tk.glucodata.ui.calibration.CalibrationModelTableScreen(
+        navController = navController,
+        isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit),
+        viewMode = viewMode,
+        sensorId = sensorName,
         onEdit = { entity ->
             onTriggerCalibration(CalibrationSheetState.Edit(entity))
         }
@@ -260,27 +529,65 @@ private fun CalibrationSheetHost(
     if (sheetState is CalibrationSheetState.Hidden) return
 
     val glucoseHistory by dashboardViewModel.glucoseHistory.collectAsStateWithLifecycle()
+    val multiSensorDisplay by dashboardViewModel.multiSensorDisplay.collectAsStateWithLifecycle()
     val unit by dashboardViewModel.unit.collectAsStateWithLifecycle()
     val viewMode by dashboardViewModel.viewMode.collectAsStateWithLifecycle()
+    val sensorViewModes by dashboardViewModel.sensorViewModes.collectAsStateWithLifecycle()
 
-    val (initAuto, initRaw, initTime) = when (sheetState) {
-        is CalibrationSheetState.New -> Triple(sheetState.auto, sheetState.raw, sheetState.timestamp)
-        is CalibrationSheetState.Edit -> Triple(
-            sheetState.entity.sensorValue,
-            sheetState.entity.sensorValueRaw,
-            sheetState.entity.timestamp
+    data class SheetInit(
+        val auto: Float,
+        val raw: Float,
+        val timestamp: Long,
+        val sensorId: String?,
+        val viewMode: Int
+    )
+
+    val init = when (sheetState) {
+        is CalibrationSheetState.New -> SheetInit(
+            auto = sheetState.auto,
+            raw = sheetState.raw,
+            timestamp = sheetState.timestamp,
+            sensorId = sheetState.sensorId.takeIf { it.isNotBlank() },
+            viewMode = sheetState.viewModeOverride ?: viewMode
         )
-        CalibrationSheetState.Hidden -> Triple(0f, 0f, 0L)
+        is CalibrationSheetState.Edit -> SheetInit(
+            auto = sheetState.entity.sensorValue,
+            raw = sheetState.entity.sensorValueRaw,
+            timestamp = sheetState.entity.timestamp,
+            sensorId = sheetState.entity.sensorId.takeIf { it.isNotBlank() },
+            viewMode = if (sheetState.entity.isRawMode) 1 else 0
+        )
+        CalibrationSheetState.Hidden -> SheetInit(0f, 0f, 0L, null, viewMode)
+    }
+
+    val sheetHistory = remember(glucoseHistory, multiSensorDisplay, init.sensorId) {
+        val sensorId = init.sensorId
+        val source = if (sensorId.isNullOrBlank()) {
+            glucoseHistory
+        } else {
+            val primarySerial = glucoseHistory.lastOrNull()?.sensorSerial
+            if (SensorIdentity.matches(sensorId, primarySerial)) {
+                glucoseHistory
+            } else {
+                multiSensorDisplay.seriesFor(sensorId)?.points.orEmpty()
+            }
+        }
+        source.map { tk.glucodata.GlucosePoint(it.timestamp, it.value, it.rawValue) }
     }
 
     tk.glucodata.ui.calibration.CalibrationBottomSheet(
         onDismiss = onDismiss,
-        initialValueAuto = initAuto,
-        initialValueRaw = initRaw,
-        initialTimestamp = initTime,
-        glucoseHistory = glucoseHistory.map { tk.glucodata.GlucosePoint(it.timestamp, it.value, it.rawValue) },
+        initialValueAuto = init.auto,
+        initialValueRaw = init.raw,
+        initialTimestamp = init.timestamp,
+        glucoseHistory = sheetHistory,
         isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit),
-        viewMode = viewMode,
+        viewMode = sensorViewModes.entries.firstOrNull { (sensorId, _) ->
+            init.sensorId != null && SensorIdentity.matches(sensorId, init.sensorId)
+        }?.value ?: init.viewMode,
+        sensorId = init.sensorId
+            ?: SensorIdentity.resolveMainSensor()
+            ?: return,
         onNavigateToHistory = {
             onDismiss()
             onNavigateToCalibrations()
@@ -306,11 +613,20 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
     // Handle back button to exit app when on start destination
     val currentBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = currentBackStackEntry?.destination?.route
+    val journalEnabled by dashboardViewModel.journalEnabled.collectAsStateWithLifecycle()
+    val journalNavigationTabEnabled by dashboardViewModel.journalNavigationTabEnabled.collectAsStateWithLifecycle()
+    val showJournalNav = journalEnabled && journalNavigationTabEnabled
 
     fun collectionModeForRoute(route: String?): DashboardViewModel.CollectionMode = when (route) {
         "dashboard", "sensors", "settings" -> DashboardViewModel.CollectionMode.DASHBOARD
         "stats" -> DashboardViewModel.CollectionMode.INACTIVE
-        "history", "journal", "calibrations", "settings/calibrations" -> DashboardViewModel.CollectionMode.FULL_HISTORY
+        "history",
+        "journal",
+        "settings/journal/history",
+        "calibrations",
+        "settings/calibrations",
+        "calibrations/model-table",
+        "settings/calibrations/model-table" -> DashboardViewModel.CollectionMode.FULL_HISTORY
         else -> when {
             route?.startsWith("sensors/") == true -> DashboardViewModel.CollectionMode.DASHBOARD
             route?.startsWith("settings/") == true -> DashboardViewModel.CollectionMode.DASHBOARD
@@ -346,8 +662,9 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
         route == null -> null
         route.startsWith("settings/") -> "settings"
         route.startsWith("sensors/") -> "sensors"
-        route == "history" || route == "journal" -> "dashboard"
-        route == "calibrations" -> "dashboard"  // calibrations is a dashboard subpage
+        route == "history" -> "dashboard"
+        route == "journal" -> "journal"
+        route == "calibrations" || route.startsWith("calibrations/") -> "dashboard"
         else -> null
     }
 
@@ -372,6 +689,9 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
     data class NavItem(val route: String, val label: String, val selectedIcon: ImageVector, val unselectedIcon: ImageVector)
     val navItems = buildList {
         add(NavItem("stats", stringResource(R.string.statistics_title), Icons.Filled.BarChart, Icons.Outlined.BarChart))
+        if (showJournalNav) {
+            add(NavItem("journal", stringResource(R.string.journal_title), Icons.Filled.EditNote, Icons.Outlined.EditNote))
+        }
         add(NavItem("dashboard", stringResource(R.string.dashboard), Icons.Filled.LegendToggle, Icons.Outlined.LegendToggle))
         add(NavItem("sensors", stringResource(R.string.sensor), Icons.Filled.Sensors, Icons.Outlined.Sensors))
         add(NavItem("settings", stringResource(R.string.settings), Icons.Filled.Settings, Icons.Outlined.Settings))
@@ -422,15 +742,17 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
                     composable("history") {
                         HistoryRoute(
                             dashboardViewModel = dashboardViewModel,
+                            title = stringResource(R.string.historyname),
+                            browseMode = TimelineBrowseMode.HISTORY,
                             onBack = { navController.popBackStack() },
                             onTriggerCalibration = onTriggerCalibration
                         )
                     }
                     composable("journal") {
-                        HistoryRoute(
+                        JournalRoute(
                             dashboardViewModel = dashboardViewModel,
-                            onBack = { navController.popBackStack() },
-                            onTriggerCalibration = onTriggerCalibration
+                            navController = navController,
+                            onTriggerCalibration = onTriggerCalibration,
                         )
                     }
                     composable("stats") { tk.glucodata.ui.stats.StatsScreen() }
@@ -445,6 +767,7 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
                     composable("settings/libreview") { LibreViewSettingsScreen(navController) }
                     composable("settings/mq-account") { MQAccountSettingsScreen(navController) }
                     composable("settings/mq-follower") { MQFollowerSettingsScreen(navController) }
+                    composable("settings/ottai") { tk.glucodata.ui.setup.OttaiSettingsScreen(navController) }
                     composable("settings/mirror") { MirrorSettingsScreen(navController) }
                     composable("settings/outbound-api") { OutboundApiSettingsScreen(navController) }
                     composable("settings/api-source") { ApiSourceSettingsScreen(navController) }
@@ -460,6 +783,9 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
                     composable("settings/data-smoothing") {
                         DataSmoothingSettingsScreen(navController, dashboardViewModel)
                     }
+                    composable("settings/predictive-simulation") {
+                        PredictiveSimulationSettingsScreen(navController, dashboardViewModel)
+                    }
                     composable("settings/floating-display") {
                         FloatingGlucoseSettingsScreen(navController, dashboardViewModel)
                     }
@@ -471,6 +797,15 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
                     composable("settings/alerts") { tk.glucodata.ui.alerts.AlertSettingsScreen(navController) }
                     composable("settings/alerts/talker") { tk.glucodata.ui.alerts.TalkerSettingsScreen(navController) }
                     composable("settings/journal") { JournalSettingsScreen(navController, dashboardViewModel) }
+                    composable("settings/journal/history") {
+                        JournalSettingsHistoryRoute(
+                            dashboardViewModel = dashboardViewModel,
+                            navController = navController,
+                            onTriggerCalibration = onTriggerCalibration
+                        )
+                    }
+                    composable("settings/journal/foods") { JournalFoodLibraryScreen(navController, dashboardViewModel) }
+                    composable("settings/journal/insulin") { JournalInsulinLibraryScreen(navController, dashboardViewModel) }
                     composable("settings/calibrations") {
                         CalibrationListRoute(
                             dashboardViewModel = dashboardViewModel,
@@ -478,8 +813,22 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
                             onTriggerCalibration = onTriggerCalibration
                         )
                     }
+                    composable("settings/calibrations/model-table") {
+                        CalibrationModelTableRoute(
+                            dashboardViewModel = dashboardViewModel,
+                            navController = navController,
+                            onTriggerCalibration = onTriggerCalibration
+                        )
+                    }
                     composable("calibrations") {
                         CalibrationListRoute(
+                            dashboardViewModel = dashboardViewModel,
+                            navController = navController,
+                            onTriggerCalibration = onTriggerCalibration
+                        )
+                    }
+                    composable("calibrations/model-table") {
+                        CalibrationModelTableRoute(
                             dashboardViewModel = dashboardViewModel,
                             navController = navController,
                             onTriggerCalibration = onTriggerCalibration
@@ -536,15 +885,17 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
                 composable("history") {
                     HistoryRoute(
                         dashboardViewModel = dashboardViewModel,
+                        title = stringResource(R.string.historyname),
+                        browseMode = TimelineBrowseMode.HISTORY,
                         onBack = { navController.popBackStack() },
                         onTriggerCalibration = onTriggerCalibration
                     )
                 }
                 composable("journal") {
-                    HistoryRoute(
+                    JournalRoute(
                         dashboardViewModel = dashboardViewModel,
-                        onBack = { navController.popBackStack() },
-                        onTriggerCalibration = onTriggerCalibration
+                        navController = navController,
+                        onTriggerCalibration = onTriggerCalibration,
                     )
                 }
                 composable("stats") { tk.glucodata.ui.stats.StatsScreen() }
@@ -559,6 +910,7 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
                 composable("settings/libreview") { LibreViewSettingsScreen(navController) }
                 composable("settings/mq-account") { MQAccountSettingsScreen(navController) }
                 composable("settings/mq-follower") { MQFollowerSettingsScreen(navController) }
+                composable("settings/ottai") { tk.glucodata.ui.setup.OttaiSettingsScreen(navController) }
                 composable("settings/mirror") { MirrorSettingsScreen(navController) }
                 composable("settings/outbound-api") { OutboundApiSettingsScreen(navController) }
                 composable("settings/api-source") { ApiSourceSettingsScreen(navController) }
@@ -574,6 +926,9 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
                 composable("settings/data-smoothing") {
                     DataSmoothingSettingsScreen(navController, dashboardViewModel)
                 }
+                composable("settings/predictive-simulation") {
+                    PredictiveSimulationSettingsScreen(navController, dashboardViewModel)
+                }
                 composable("settings/floating-display") {
                     FloatingGlucoseSettingsScreen(navController, dashboardViewModel)
                 }
@@ -585,6 +940,15 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
                 composable("settings/alerts") { tk.glucodata.ui.alerts.AlertSettingsScreen(navController) }
                 composable("settings/alerts/talker") { tk.glucodata.ui.alerts.TalkerSettingsScreen(navController) }
                 composable("settings/journal") { JournalSettingsScreen(navController, dashboardViewModel) }
+                composable("settings/journal/history") {
+                    JournalSettingsHistoryRoute(
+                        dashboardViewModel = dashboardViewModel,
+                        navController = navController,
+                        onTriggerCalibration = onTriggerCalibration
+                    )
+                }
+                composable("settings/journal/foods") { JournalFoodLibraryScreen(navController, dashboardViewModel) }
+                composable("settings/journal/insulin") { JournalInsulinLibraryScreen(navController, dashboardViewModel) }
                 composable("settings/calibrations") {
                     CalibrationListRoute(
                         dashboardViewModel = dashboardViewModel,
@@ -592,8 +956,22 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
                         onTriggerCalibration = onTriggerCalibration
                     )
                 }
+                composable("settings/calibrations/model-table") {
+                    CalibrationModelTableRoute(
+                        dashboardViewModel = dashboardViewModel,
+                        navController = navController,
+                        onTriggerCalibration = onTriggerCalibration
+                    )
+                }
                 composable("calibrations") {
                     CalibrationListRoute(
+                        dashboardViewModel = dashboardViewModel,
+                        navController = navController,
+                        onTriggerCalibration = onTriggerCalibration
+                    )
+                }
+                composable("calibrations/model-table") {
+                    CalibrationModelTableRoute(
                         dashboardViewModel = dashboardViewModel,
                         navController = navController,
                         onTriggerCalibration = onTriggerCalibration

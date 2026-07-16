@@ -25,8 +25,10 @@ import android.os.PowerManager
 // import android.util.Log
 import tk.glucodata.Log
 import tk.glucodata.Applic
+import tk.glucodata.ExchangeTrend
 import tk.glucodata.SuperGattCallback
 import tk.glucodata.Natives
+import tk.glucodata.drivers.ManagedSensorViewModeStore
 import com.microtechmd.blecomm.BleAdapter
 import com.microtechmd.blecomm.BlecommLoader
 import com.microtechmd.blecomm.BluetoothDeviceStore
@@ -212,6 +214,7 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
         private const val BROADCAST_SCAN_MAX_INTERVAL_MS = 300_000L
         private const val BROADCAST_MIN_STORE_INTERVAL_MS = 50_000L
         private const val COMMAND_SESSION_ACTIVE_WINDOW_MS = 90_000L
+        private const val VENDOR_RESET_DIAG_WINDOW_MS = 10 * 60_000L
 
         private const val BROADCAST_REFERENCE_MS = 5 * 60_000L
 
@@ -1426,13 +1429,19 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
     override var viewMode: Int
         get() = viewModeInternal
         set(value) {
-            if (viewModeInternal == value) return
+            val normalized = ManagedSensorViewModeStore.sanitize(value)
+            if (viewModeInternal == normalized) {
+                ManagedSensorViewModeStore.write(Applic.app, SerialNumber, normalized)
+                if (dataptr != 0L) Natives.setViewMode(dataptr, normalized)
+                return
+            }
             val previous = viewModeInternal
-            viewModeInternal = value
+            viewModeInternal = normalized
+            ManagedSensorViewModeStore.write(Applic.app, SerialNumber, normalized)
             vendorRawFlatlineStreak = 0
             lastF003RawCandidateMgDl = 0f
             lastF003RawCandidateTime = 0L
-            if (!isRawLaneMode(previous) && isRawLaneMode(value)) {
+            if (!isRawLaneMode(previous) && isRawLaneMode(normalized)) {
                 if (shouldHydrateRawHistoryOnModeEnter()) {
                     vendorRawHistoryHydrationPending = true
                     lastHistoryRequestTime = 0L
@@ -1447,12 +1456,12 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
                     )
                 }
             }
-            if (previous == 0 && value != 0) {
+            if (previous == 0 && normalized != 0) {
                 // Allow combined/raw modes to consume the most recent broadcast once.
                 lastBroadcastStoredOffsetMinutes = 0L
             }
-            Log.i(TAG, "ViewMode changed: $previous -> $value")
-            if (dataptr != 0L) Natives.setViewMode(dataptr, value)
+            Log.i(TAG, "ViewMode changed: $previous -> $normalized")
+            if (dataptr != 0L) Natives.setViewMode(dataptr, normalized)
             applyViewMode("viewMode", connectIfNeeded = true)
         }
 
@@ -1734,7 +1743,9 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
         }
         // Load connection option (separate from viewMode)
         broadcastOnlyConnection = readBoolPref("broadcastOnlyConnection", false)
-        viewModeInternal = if (dataptr != 0L) Natives.getViewMode(dataptr) else 0
+        val nativeViewMode = if (dataptr != 0L) Natives.getViewMode(dataptr) else 0
+        viewModeInternal = ManagedSensorViewModeStore.read(Applic.app, serial, nativeViewMode)
+        if (dataptr != 0L) Natives.setViewMode(dataptr, viewModeInternal)
 
         // Set initial status for broadcast mode (prevents 'Searching for sensors' from SensorBluetooth)
         if (broadcastOnlyConnection) {
@@ -3566,6 +3577,11 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
                             Log.e(TAG, "Edit 58a: GET_START_TIME parse failed: ${t.message}")
                         }
                     }
+                    vendorResetDiag(
+                        stage = "session-start-verification",
+                        details = "success=true len=${data?.size ?: 0} parsed=$startTimeParsed zeros=$isAllZeros " +
+                            "startMs=$vendorSensorStartTimeMs newSensorAttempted=$vendorNewSensorAttempted",
+                    )
 
                     if (isAllZeros && !vendorNewSensorAttempted) {
                         // Edit 75: Sensor has no start time — automatically send SET_NEW_SENSOR to activate it.
@@ -3611,6 +3627,11 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
                             startVendorLongConnect("post-pairing")
                         }, 500L)
                     }
+                } else {
+                    vendorResetDiag(
+                        stage = "session-start-verification",
+                        details = "success=false resCode=${message.resCode} len=${data?.size ?: 0}",
+                    )
                 }
             }
             AidexXOperation.GET_HISTORY_RANGE -> {
@@ -3618,10 +3639,18 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
                 // Official app pattern: getHistoryRange() → parse range → getHistories(nextEventIndex)
                 vendorHistoryRangePending = false
                 Log.i(TAG, "Vendor GET_HISTORY_RANGE: success=${message.isSuccess} data=${data?.let { bytesToHex(it) } ?: "null"} (${data?.size ?: 0} bytes)")
+                vendorResetDiag(
+                    stage = "history-range-response",
+                    details = "success=${message.isSuccess} resCode=${message.resCode} len=${data?.size ?: 0}",
+                )
                 if (message.isSuccess && data != null && data.size >= 6) {
                     val briefStart = (data[0].toInt() and 0xFF) or ((data[1].toInt() and 0xFF) shl 8)
                     val rawStart = (data[2].toInt() and 0xFF) or ((data[3].toInt() and 0xFF) shl 8)
                     val newest = (data[4].toInt() and 0xFF) or ((data[5].toInt() and 0xFF) shl 8)
+                    vendorResetDiag(
+                        stage = "history-range-verification",
+                        details = "briefStart=$briefStart rawStart=$rawStart newest=$newest",
+                    )
                     if (vendorHistoryDownloading) {
                         Log.i(TAG, "GET_HISTORY_RANGE: duplicate response ignored — history download already in progress")
                         return
@@ -3784,7 +3813,8 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
                             now,
                             "vendor-auto",
                             fromVendor = true,
-                            vendorRawMgDl = entity.rawMgDl
+                            vendorRawMgDl = entity.rawMgDl,
+                            trend = entity.trend
                         )
                         if (didStore) {
                             Log.i(TAG, "Vendor AUTO_UPDATE: glucose=${entity.glucoseMgDl} offset=${entity.timeOffsetMinutes}min trend=${entity.trend} — stored")
@@ -3856,7 +3886,8 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
                             now,
                             "vendor-gatt",
                             fromVendor = true,
-                            vendorRawMgDl = result.rawMgDl
+                            vendorRawMgDl = result.rawMgDl,
+                            trend = result.trend
                         )
                         // Edit 77: Only set vendorGotGlucoseThisCycle and transition to slow poll
                         // when glucose was actually stored. During warmup, storeAutoFromSource
@@ -3951,6 +3982,10 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
             }
             AidexXOperation.CLEAR_STORAGE -> {
                 Log.i(TAG, "Vendor CLEAR_STORAGE response: success=${message.isSuccess} resCode=${message.resCode}")
+                vendorResetDiag(
+                    stage = "f3-response",
+                    details = "success=${message.isSuccess} resCode=${message.resCode}",
+                )
             }
             AidexXOperation.GET_HISTORIES_RAW -> {
                 cancelHistoryPageTimeout()
@@ -4318,7 +4353,8 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
             now,
             source,
             fromVendor = true,
-            vendorRawMgDl = entity.rawMgDl
+            vendorRawMgDl = entity.rawMgDl,
+            trend = entity.trend
         )
     }
 
@@ -4331,7 +4367,8 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
             now,
             source,
             fromVendor = true,
-            vendorRawMgDl = entity.rawMgDl
+            vendorRawMgDl = entity.rawMgDl,
+            trend = entity.trend
         )
     }
 
@@ -5702,6 +5739,11 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
             val now = System.currentTimeMillis()
             connectTime = now
             constatstatusstr = "Connected"
+            vendorResetDiag(
+                stage = "gatt-connected",
+                details = "status=$status address=${gatt.device.address}",
+                nowMs = now,
+            )
 
             // Leave start time unset until we have a valid offset from broadcast/history.
 
@@ -5831,6 +5873,10 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
             connectTime = 0L
             constatstatusstr = "Disconnected"
             Log.i(TAG, "Disconnected. status=$status (${gattStatusToString(status)})")
+            vendorResetDiag(
+                stage = "gatt-disconnected",
+                details = "status=$status statusName=${gattStatusToString(status)} address=$disconnectedAddressHint",
+            )
             cancelHandshakeTimers()
             connectedAddress = null
             bondRequested = false
@@ -7040,7 +7086,8 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
                     now,
                     "vendor-broadcast",
                     fromVendor = true,
-                    vendorRawMgDl = vendor.rawMgDl
+                    vendorRawMgDl = vendor.rawMgDl,
+                    trend = vendor.trend
                 )
                 if (didStore && detectVendorHistoryGap(vendor.timeOffsetMinutes, "vendor-broadcast")) {
                     requestHistoryBackfill("post-broadcast-gap")
@@ -7092,12 +7139,12 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
             constatstatusstr = "Receiving"
         }
 
-        storeBroadcastIfNeeded(lastBroadcastGlucose, offsetMinutes, now)
+        storeBroadcastIfNeeded(lastBroadcastGlucose, offsetMinutes, now, trend)
         storeRawFromBroadcastIfNeeded(lastBroadcastGlucose, offsetMinutes, now)
         return true
     }
 
-    private fun storeBroadcastIfNeeded(glucoseMgDl: Float, offsetMinutes: Long, timeMs: Long) {
+    private fun storeBroadcastIfNeeded(glucoseMgDl: Float, offsetMinutes: Long, timeMs: Long, trend: Int = Int.MIN_VALUE) {
         if (!broadcastEnabled) return
         // Mode 4 (Broadcast Only) stores broadcast data as Auto readings since that's its only source
         if (!wantsAuto() && !isBroadcastOnlyMode()) return
@@ -7115,7 +7162,8 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
             offsetMinutes.toInt(),
             timeMs,
             "broadcast",
-            fromVendor = false
+            fromVendor = false,
+            trend = trend
         )
         if (stored) {
             lastBroadcastStoredOffsetMinutes = offsetMinutes
@@ -7848,7 +7896,8 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
         now: Long,
         source: String,
         fromVendor: Boolean,
-        vendorRawMgDl: Float = 0f
+        vendorRawMgDl: Float = 0f,
+        trend: Int = Int.MIN_VALUE
     ): Boolean {
         // Mode 4 (Broadcast Only) uses this path to store readings since it has no other source.
         if (!wantsAuto() && !wantsRaw() && !isBroadcastOnlyMode()) return false
@@ -7949,6 +7998,9 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
         }
 
         Log.i(TAG, ">>> SUCCESS AIDEX: Auto($source)=$compensatedGlucose mg/dL${if (compensationFactor != 1.0f) " (raw=$glucoseMgDl, factor=$compensationFactor)" else ""}")
+        if (trend != Int.MIN_VALUE) {
+            ExchangeTrend.cacheAiDexTrend(SerialNumber, now, trend)
+        }
         storeAidexReading(byteArrayOf(0), now, compensatedGlucose, rawForStore)
         if (rawForStore > 0f) {
             lastRawMgDl = rawForStore
@@ -9102,6 +9154,25 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
         private set
     @Volatile override var vendorModelName: String = ""
         private set
+    @Volatile private var vendorResetRequestedAtMs: Long = 0L
+
+    private fun vendorResetDiag(
+        stage: String,
+        details: String = "",
+        nowMs: Long = System.currentTimeMillis(),
+    ) {
+        val requestedAt = vendorResetRequestedAtMs
+        if (requestedAt <= 0L || nowMs < requestedAt || nowMs - requestedAt > VENDOR_RESET_DIAG_WINDOW_MS) return
+        val suffix = if (details.isBlank()) "" else " $details"
+        Log.i(
+            TAG,
+            "RESET_DIAG path=vendor-wrapper stage=$stage sensor=$SerialNumber " +
+                "fw=${vendorFirmwareVersion.ifBlank { "?" }} model=${vendorModelName.ifBlank { "?" }} " +
+                "requestAgeMs=${nowMs - requestedAt} connected=$vendorGattConnected notified=$vendorGattNotified " +
+                "nativeReady=$vendorNativeReady bond=${mBluetoothGatt?.device?.bondState ?: BluetoothDevice.BOND_NONE} " +
+                "historyNext=$vendorHistoryNextIndex newest=$vendorHistoryNewestIndex lastOffset=$lastVendorOffsetMinutes$suffix"
+        )
+    }
 
     // Edit 45d: History range + pagination tracking.
     // The official app calls getHistoryRange() first, which returns 6 bytes:
@@ -10421,9 +10492,8 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
     /**
      * Resets the sensor (restarts lifecycle).
      * Multi-strategy approach:
-     *   Strategy 1: Vendor native lib (controller.reset()) — requires AES init
-     *   Strategy 2: Direct FF32 write on FF30 service
-     *   Strategy 3: BLE bond removal + disconnect (forces re-init on reconnect)
+     *   Strategy 1: Vendor native lib clearStorage() — requires AES init
+     *   Strategy 2: BLE bond removal + disconnect (forces re-init on reconnect)
      *
      * Each strategy is tried in order; any success short-circuits.
      * All attempts are logged for diagnostics.
@@ -10431,6 +10501,11 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
     override fun resetSensor(): Boolean {
         Log.i(TAG, "=== RESET SENSOR: Multi-Strategy Reset ===")
         clearVendorBondFailureLockout("resetSensor")
+        vendorResetRequestedAtMs = System.currentTimeMillis()
+        vendorResetDiag(
+            stage = "request",
+            details = "vendorBleEnabled=$vendorBleEnabled controller=${vendorController != null}",
+        )
         // Edit 47: Reset history position — new sensor means history starts from scratch
         vendorHistoryNextIndex = 0
         writeIntPref("vendorHistoryNextIndex", 0)
@@ -10443,12 +10518,12 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
         // before executing the command, so we don't need to pre-check aesReady here.
         if (vendorBleEnabled && vendorController != null) {
             Log.i(TAG, "Reset Strategy 1: Vendor native lib")
-            val success = executeVendorCommand("reset-sensor", AidexXOperation.RESET) { ctrl ->
+            val success = executeVendorCommand("reset-sensor", AidexXOperation.CLEAR_STORAGE) { ctrl ->
                 ctrl.clearStorage()
-                ctrl.reset()
             }
             if (success) {
-                Log.i(TAG, "Reset Strategy 1: SUCCESS — reset command accepted by vendor native lib")
+                Log.i(TAG, "Reset Strategy 1: SUCCESS — CLEAR_STORAGE accepted by vendor native lib")
+                vendorResetDiag("f3-command-accepted")
                 // Give time for the BLE write to actually transmit
                 try { Thread.sleep(1000) } catch (_: InterruptedException) {}
                 // Edit 85b: On Xiaomi traces, sensor reset can invalidate BLE/AES context while
@@ -10457,21 +10532,29 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
                 Log.i(TAG, "Edit 85b: post-reset clean pairing kickoff (clear keys + remove bond + reconnect)")
                 try {
                     clearVendorPairingKeys()
+                    vendorResetDiag("pairing-keys-cleared")
                 } catch (t: Throwable) {
                     Log.e(TAG, "Edit 85b: clearVendorPairingKeys failed: ${t.message}")
+                    vendorResetDiag("pairing-keys-clear-failed", "error=${t.javaClass.simpleName}")
                 }
                 try {
                     val removed = removeSensorBond()
                     Log.i(TAG, "Edit 85b: removeSensorBond result=$removed")
+                    vendorResetDiag("bond-removal", "removed=$removed")
                 } catch (t: Throwable) {
                     Log.e(TAG, "Edit 85b: removeSensorBond failed: ${t.message}")
+                    vendorResetDiag("bond-removal-failed", "error=${t.javaClass.simpleName}")
                 }
                 try {
                     super.disconnect()
+                    vendorResetDiag("disconnect-requested")
                 } catch (t: Throwable) {
                     Log.e(TAG, "Edit 85b: post-reset disconnect failed: ${t.message}")
+                    vendorResetDiag("disconnect-request-failed", "error=${t.javaClass.simpleName}")
                 }
+                vendorResetDiag("reconnect-scheduled", "delayMs=1500")
                 vendorWorkHandler.postDelayed({
+                    vendorResetDiag("reconnect-kickoff")
                     clearVendorBondFailureLockout("post-reset-clean-pair")
                     ensureVendorStarted("post-reset-clean-pair")
                     scheduleBroadcastScan("post-reset-clean-pair", forceImmediate = true)
@@ -10479,55 +10562,24 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
                 return true
             } else {
                 Log.w(TAG, "Reset Strategy 1: FAILED — vendor native command not accepted (AES handshake may have failed)")
+                vendorResetDiag("f3-command-rejected")
             }
         } else {
             Log.w(TAG, "Reset Strategy 1: SKIPPED — vendor BLE disabled or controller null")
-        }
-
-        // --- Strategy 2: Direct FF32 Write on FF30 Service ---
-        // The FF30 service is the vendor private channel for maintenance commands.
-        // We try writing the reset opcode directly.
-        // Based on AidexXOperation: RESET=0xF00. The native lib translates this into
-        // a wire-format command. Without knowing exact format, we try the opcode bytes.
-        Log.i(TAG, "Reset Strategy 2: Direct FF32 write on FF30 service")
-
-        // Try via vendor write queue (uses proper serialization)
-        val vendorResetSent = try {
-            val ff32Id = 0xFF32.toInt()
-            // Attempt 2a: Single-byte reset command (common BLE pattern)
-            vendorWrite(ff32Id, byteArrayOf(0x0F.toByte(), 0x00.toByte())) // 0xF00 as little-endian 2 bytes
-            Thread.sleep(300)
-            // Attempt 2b: Also try the full AidexXOperation.RESET value as big-endian
-            vendorWrite(ff32Id, byteArrayOf(
-                ((AidexXOperation.RESET shr 8) and 0xFF).toByte(),
-                (AidexXOperation.RESET and 0xFF).toByte()
-            ))
-            true
-        } catch (t: Throwable) {
-            Log.w(TAG, "Reset Strategy 2 (vendor queue): failed: ${t.message}")
-            false
-        }
-
-        // Also try direct GATT write bypassing vendor queue
-        if (!vendorResetSent) {
-            val directSuccess = writeFF32Command(
-                byteArrayOf(0x0F.toByte(), 0x00.toByte()),
-                Applic.app.getString(R.string.resetname)
+            vendorResetDiag(
+                stage = "f3-command-unavailable",
+                details = "vendorBleEnabled=$vendorBleEnabled controller=${vendorController != null}",
             )
-            if (directSuccess) {
-                Log.i(TAG, "Reset Strategy 2: FF32 direct write sent")
-                // Wait for potential response on FF31
-                Thread.sleep(500)
-            }
         }
 
-        // --- Strategy 3: BLE Bond Removal + Disconnect ---
+        // --- Strategy 2: BLE Bond Removal + Disconnect ---
         // Removing the bond forces re-initialization on next connection.
         // The sensor will go back to unbonded state and allow fresh pairing.
-        Log.i(TAG, "Reset Strategy 3: BLE bond removal + disconnect")
+        Log.i(TAG, "Reset Strategy 2: BLE bond removal + disconnect")
         val bondRemoved = removeSensorBond()
         if (bondRemoved) {
-            Log.i(TAG, "Reset Strategy 3: Bond removed. Disconnecting GATT...")
+            Log.i(TAG, "Reset Strategy 2: Bond removed. Disconnecting GATT...")
+            vendorResetDiag("fallback-bond-only", "removed=true")
             // Suppress disconnect debounce for this explicit user action
             disregardDisconnectsUntil = 0
             disconnect()
@@ -10549,15 +10601,16 @@ class AiDexSensor(context: Context, serial: String, dataptr: Long) : SuperGattCa
             vendorLongConnectTriggered = false
             vendorGattQueue.clear()
             vendorGattOpActive = false
-            Log.i(TAG, "Reset Strategy 3: Session state cleared. Sensor will re-initialize on next connection.")
+            Log.i(TAG, "Reset Strategy 2: Session state cleared. Sensor will re-initialize on next connection.")
             return true
         } else {
-            Log.w(TAG, "Reset Strategy 3: Bond removal failed or device not bonded")
+            Log.w(TAG, "Reset Strategy 2: Bond removal failed or device not bonded")
+            vendorResetDiag("fallback-bond-only", "removed=false")
         }
 
-        // If all strategies attempted but none confirmed success
-        Log.w(TAG, "=== RESET SENSOR: All strategies attempted. Check logs for partial success. ===")
-        return vendorResetSent // Return true if at least FF32 write was sent
+        Log.w(TAG, "=== RESET SENSOR: No reset strategy succeeded. ===")
+        vendorResetDiag("failed")
+        return false
     }
 
     /**

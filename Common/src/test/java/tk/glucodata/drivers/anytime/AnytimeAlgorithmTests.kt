@@ -1,7 +1,9 @@
 package tk.glucodata.drivers.anytime
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AnytimeAlgorithmTests {
@@ -60,6 +62,34 @@ class AnytimeAlgorithmTests {
     }
 
     @Test
+    fun fromComputedRecordDoesNotClampNativeLowGlucoseToThreeMmol() {
+        val qr = AnytimeQr.parse("a61061B")
+        val family = AnytimeConstants.resolveFamily("SN8760000835")
+        val result = AnytimeAlgorithm.fromComputedRecord(
+            AnytimeComputedRecord(
+                glucoseId = 3126,
+                hypoEarlyWarnMinutes = 0,
+                hyperEarlyWarnMinutes = 0,
+                ibNa = 1.71f,
+                iwNa = 4.04f,
+                temperatureC = 35.4f,
+                gluMmol = 2.61f,
+                referenceBgMmol = 0f,
+                errorCode = 0,
+                trend = 0,
+                warnCode = 0,
+            ),
+            qr,
+            family,
+        )
+
+        assertEquals(AnytimeAlgorithm.Source.NATIVE, result.source)
+        assertEquals(2.61f, result.mmol, 0.001f)
+        assertEquals(47.0f, result.mgdl, 0.001f)
+        assertTrue(result.mmol < 3.0f)
+    }
+
+    @Test
     fun ct4VoltageOneRawLinearNormalizesWorkingCurrentWithoutTouchingParsedFields() {
         val qr = AnytimeQr.parse("a61061B")!!
         val family = AnytimeConstants.resolveFamily("SN8760000835")
@@ -104,5 +134,13 @@ class AnytimeAlgorithmTests {
 
         assertEquals(AnytimeConstants.ALGO_MMOL_FLOOR.toFloat(), result.mmol, 0.001f)
         assertEquals(20.8f, result.rawMgdl, 0.1f)
+    }
+
+    @Test
+    fun referenceBgStaysAttachedAfterTargetGlucoseId() {
+        assertFalse(AnytimeAlgorithm.shouldAttachReferenceBg(3724, 3725, 1080))
+        assertTrue(AnytimeAlgorithm.shouldAttachReferenceBg(3725, 3725, 1080))
+        assertTrue(AnytimeAlgorithm.shouldAttachReferenceBg(3727, 3725, 1080))
+        assertFalse(AnytimeAlgorithm.shouldAttachReferenceBg(3727, 3725, 0))
     }
 }

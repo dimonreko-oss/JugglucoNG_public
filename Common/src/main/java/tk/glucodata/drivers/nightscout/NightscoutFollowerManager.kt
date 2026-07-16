@@ -3,9 +3,9 @@ package tk.glucodata.drivers.nightscout
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import java.net.HttpURLConnection
 import java.net.URL
-import java.security.MessageDigest
 import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
@@ -33,7 +33,9 @@ class NightscoutFollowerManager(
         private const val SENSOR_GEN = 0
         private const val POLL_INTERVAL_MS = 60_000L
         private const val RETRY_INTERVAL_MS = 30_000L
+        private const val PROBE_INTERVAL_MS = 59_000L
         private const val HISTORY_COUNT = 288
+        private const val TREATMENT_COUNT = 512
         private const val MMOL_TO_MGDL = 18.0182f
     }
 
@@ -46,6 +48,8 @@ class NightscoutFollowerManager(
     private val handlerThread = HandlerThread("NightscoutFollower-$serial").also { it.start() }
     private val handler = Handler(handlerThread.looper)
     private val pollRunnable = Runnable { refresh("poll") }
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val probeRunnable = Runnable { reconnect(System.currentTimeMillis()) }
 
     @Volatile private var phase: Phase = Phase.IDLE
     @Volatile private var status: String = localizedString(R.string.nightscout_follow_status_idle, "Nightscout follower idle")
@@ -125,18 +129,31 @@ class NightscoutFollowerManager(
     override fun connectDevice(delayMillis: Long): Boolean {
         stop = false
         scheduleRefresh(delayMillis.coerceAtLeast(0L))
+        mainHandler.removeCallbacks(probeRunnable)
+        mainHandler.postDelayed(probeRunnable, PROBE_INTERVAL_MS)
         return true
     }
 
     override fun close() {
         handler.removeCallbacksAndMessages(null)
-        runCatching { handlerThread.quitSafely() }
+        if (stop) {
+            // Permanent shutdown: free() sets stop=true before calling close().
+            // Quit the HandlerThread so it doesn't outlive the sensor object.
+            mainHandler.removeCallbacks(probeRunnable)
+            runCatching { handlerThread.quitSafely() }
+        } else {
+            // Transient disconnect (e.g. Bluetooth off, network drop).
+            // Keep the HandlerThread alive and reset to IDLE so reconnect() can
+            // restart polling without needing a full sensor teardown/reinit.
+            setStatus(Phase.IDLE, localizedString(R.string.nightscout_follow_status_idle, "Nightscout follower idle"))
+        }
         super.close()
     }
 
     override fun softDisconnect() {
         stop = true
         handler.removeCallbacksAndMessages(null)
+        mainHandler.removeCallbacks(probeRunnable)
         setStatus(Phase.IDLE, localizedString(R.string.nightscout_follow_status_paused, "Nightscout follower paused"))
     }
 
@@ -145,9 +162,19 @@ class NightscoutFollowerManager(
         scheduleRefresh(0L)
     }
 
+    override fun reconnect(now: Long): Boolean {
+        if (!stop) {
+            if (phase == Phase.IDLE) connectDevice(0)
+            mainHandler.removeCallbacks(probeRunnable)
+            mainHandler.postDelayed(probeRunnable, PROBE_INTERVAL_MS)
+        }
+        return true
+    }
+
     override fun terminateManagedSensor(wipeData: Boolean) {
         stop = true
         handler.removeCallbacksAndMessages(null)
+        mainHandler.removeCallbacks(probeRunnable)
         if (wipeData) {
             Applic.app?.let { NightscoutFollowerRegistry.disableFollowerSensor(it) }
         }
@@ -182,6 +209,7 @@ class NightscoutFollowerManager(
         setStatus(Phase.SYNCING, localizedString(R.string.nightscout_follow_status_syncing, "Refreshing Nightscout"))
         try {
             val readings = fetchReadings()
+            importRemoteTreatments()
             if (readings.isEmpty()) {
                 setStatus(Phase.IDLE, localizedString(R.string.nightscout_follow_status_no_readings, "No Nightscout readings yet"))
                 scheduleRefresh(POLL_INTERVAL_MS)
@@ -250,7 +278,7 @@ class NightscoutFollowerManager(
             requestMethod = "GET"
             setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", "JugglucoNG Nightscout follower")
-            applyAuth(secret)
+            NightscoutFollowerRegistry.applyAuth(this, secret)
         }
         val code = connection.responseCode
         val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
@@ -270,18 +298,48 @@ class NightscoutFollowerManager(
             .sortedBy { it.timestampMs }
     }
 
-    private fun HttpURLConnection.applyAuth(secret: String) {
-        val trimmed = secret.trim()
-        if (trimmed.isEmpty()) return
-        if (trimmed.startsWith("Bearer ", ignoreCase = true)) {
-            setRequestProperty("Authorization", trimmed)
-            return
+    private fun importRemoteTreatments(): Int =
+        runCatching {
+            val body = fetchTreatmentsJson()
+            if (body.isBlank() || body == "[]") return@runCatching 0
+            val type = Class.forName("tk.glucodata.data.journal.NightscoutJournalFollowerImporter")
+            val method = type.getMethod("importTreatments", String::class.java, String::class.java)
+            val imported = method.invoke(null, SerialNumber, body) as? Int ?: 0
+            if (imported > 0) {
+                UiRefreshBus.requestDataRefresh()
+            }
+            imported
+        }.getOrElse { error ->
+            if (error !is ClassNotFoundException) {
+                Log.w(TAG, "Nightscout treatment import ignored: ${error.message}")
+            }
+            0
         }
-        if (trimmed.startsWith("token=", ignoreCase = true)) {
-            setRequestProperty("Authorization", "Bearer ${trimmed.substringAfter('=')}")
-            return
+
+    private fun fetchTreatmentsJson(): String {
+        val endpoint = "${NightscoutFollowerRegistry.normalizeUrl(url)}/api/v1/treatments.json?count=$TREATMENT_COUNT"
+        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            requestMethod = "GET"
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("User-Agent", "JugglucoNG Nightscout follower")
+            NightscoutFollowerRegistry.applyAuth(this, secret)
         }
-        setRequestProperty("api-secret", if (trimmed.matches(Regex("^[0-9a-fA-F]{40}$"))) trimmed else sha1(trimmed))
+        try {
+            val code = connection.responseCode
+            val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader()
+                ?.use { it.readText() }
+                .orEmpty()
+            if (code == 404) return "[]"
+            if (code !in 200..299) {
+                throw IllegalStateException("Nightscout treatments HTTP $code: ${body.take(160)}")
+            }
+            return body
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun parseEntry(entry: JSONObject?): VirtualGlucoseSensorBridge.Reading? {
@@ -301,8 +359,4 @@ class NightscoutFollowerManager(
         )
     }
 
-    private fun sha1(value: String): String =
-        MessageDigest.getInstance("SHA-1")
-            .digest(value.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(Locale.US, it) }
 }

@@ -946,6 +946,45 @@ class StartupMetadataParsingTests {
     }
 
     @Test
+    fun testParseStartupDeviceInfoFrame_stripsOpcodeOnly() {
+        val frame = AiDexParser.dataFromHex("100000010701030F0047582D3031530000")
+
+        val parsed = AiDexParser.parseStartupDeviceInfoFrame(frame)
+
+        assertNotNull(parsed)
+        assertEquals("1.7", parsed!!.firmwareVersion)
+        assertEquals("1.3", parsed.hardwareVersion)
+        assertEquals(15, parsed.wearDays)
+        assertEquals("GX-01S", parsed.modelName)
+    }
+
+    @Test
+    fun testParseStartupDeviceInfoPayload_lumiflex16DayShape() {
+        val payload = AiDexParser.dataFromHex("000001080201100047582D3031530000")
+
+        val parsed = AiDexParser.parseStartupDeviceInfoPayload(payload)
+
+        assertNotNull(parsed)
+        assertEquals("1.8", parsed!!.firmwareVersion)
+        assertEquals("2.1", parsed.hardwareVersion)
+        assertEquals(16, parsed.wearDays)
+        assertEquals("GX-01S", parsed.modelName)
+    }
+
+    @Test
+    fun testParseStartupDeviceInfoFrame_lumiflex16DayShape() {
+        val frame = AiDexParser.dataFromHex("10000001080201100047582D3031530000")
+
+        val parsed = AiDexParser.parseStartupDeviceInfoFrame(frame)
+
+        assertNotNull(parsed)
+        assertEquals("1.8", parsed!!.firmwareVersion)
+        assertEquals("2.1", parsed.hardwareVersion)
+        assertEquals(16, parsed.wearDays)
+        assertEquals("GX-01S", parsed.modelName)
+    }
+
+    @Test
     fun testParseLocalStartTimePayload_acceptsPlausibleDate() {
         val payload = byteArrayOf(
             0xEA.toByte(), 0x07,
@@ -1339,10 +1378,10 @@ class CacheCalibratedEntriesTests {
 
     @Test
     fun testControlValueDeviation_ExactThreshold() {
-        // Deviation of exactly 50 should NOT be skipped (> 50 required)
+        // Deviation of exactly 20 should NOT be skipped (> 20 required)
         val cache = mutableMapOf<Int, Int>()
         val entries = (0 until 120).map { i ->
-            if (i < 119) entry(1000 + i, 80) else entry(1000 + i, 130)  // deviation = 50
+            if (i < 119) entry(1000 + i, 80) else entry(1000 + i, 100)  // deviation = 20
         }
         val (cached, skipped) = HistoryMerge.cacheCalibratedEntries(entries, cache)
         assertEquals(120, cached)
@@ -1351,14 +1390,33 @@ class CacheCalibratedEntriesTests {
 
     @Test
     fun testControlValueDeviation_JustAboveThreshold() {
-        // Deviation of 51 should be skipped
+        // Deviation of 21 should be skipped
         val cache = mutableMapOf<Int, Int>()
         val entries = (0 until 120).map { i ->
-            if (i < 119) entry(1000 + i, 80) else entry(1000 + i, 131)  // deviation = 51
+            if (i < 119) entry(1000 + i, 80) else entry(1000 + i, 101)  // deviation = 21
         }
         val (cached, skipped) = HistoryMerge.cacheCalibratedEntries(entries, cache)
         assertEquals(119, cached)
         assertEquals(1, skipped)
+    }
+
+    @Test
+    fun testSkipsObservedAiDexPageTailBump() {
+        val cache = mutableMapOf<Int, Int>()
+        val entries = (0 until 120).map { i ->
+            when (i) {
+                118 -> entry(6989 + i, 70)
+                119 -> entry(6989 + i, 97)
+                else -> entry(6989 + i, 70)
+            }
+        }
+
+        val (cached, skipped) = HistoryMerge.cacheCalibratedEntries(entries, cache)
+
+        assertEquals(119, cached)
+        assertEquals(1, skipped)
+        assertEquals(70, cache[7107])
+        assertNull(cache[7108])
     }
 }
 

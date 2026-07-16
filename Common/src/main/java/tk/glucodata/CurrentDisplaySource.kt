@@ -10,6 +10,12 @@ object CurrentDisplaySource {
     private const val MATCH_WINDOW_MS = 60 * 1000L
     private const val MGDL_PER_MMOLL = 18.0182f
 
+    private data class SmoothingMode(
+        val smoothAllData: Boolean,
+        val smoothingMinutes: Int,
+        val collapseChunks: Boolean
+    )
+
     data class Snapshot(
         val timeMillis: Long,
         val rate: Float,
@@ -22,10 +28,12 @@ object CurrentDisplaySource {
         val rawValue: Float,
         val sharedDisplayValue: Float,
         val sharedMgdl: Int,
+        val isMmol: Boolean,
         val displayValues: DisplayValues
     ) {
         val primaryValue: Float get() = displayValues.primaryValue
         val primaryStr: String get() = displayValues.primaryStr
+        val speechPrimaryStr: String get() = DisplayValueResolver.formatForSpeech(primaryValue, isMmol)
         val secondaryStr: String? get() = displayValues.secondaryStr
         val tertiaryStr: String? get() = displayValues.tertiaryStr
         val fullFormatted: String get() = displayValues.fullFormatted
@@ -38,12 +46,38 @@ object CurrentDisplaySource {
         preferredSensorId: String? = null,
         historyWindowMs: Long = DEFAULT_HISTORY_WINDOW_MS
     ): Snapshot? {
+        return resolveCurrentInternal(
+            maxAgeMillis = maxAgeMillis,
+            preferredSensorId = preferredSensorId,
+            historyWindowMs = historyWindowMs,
+            smoothingMode = localSmoothingMode()
+        )
+    }
+
+    @JvmStatic
+    @JvmOverloads
+    fun resolveCurrentForExchange(
+        maxAgeMillis: Long = Notify.glucosetimeout,
+        preferredSensorId: String? = null,
+        historyWindowMs: Long = DEFAULT_HISTORY_WINDOW_MS
+    ): Snapshot? {
+        return resolveCurrentInternal(
+            maxAgeMillis = maxAgeMillis,
+            preferredSensorId = preferredSensorId,
+            historyWindowMs = historyWindowMs,
+            smoothingMode = exchangeSmoothingMode()
+        )
+    }
+
+    private fun resolveCurrentInternal(
+        maxAgeMillis: Long,
+        preferredSensorId: String?,
+        historyWindowMs: Long,
+        smoothingMode: SmoothingMode
+    ): Snapshot? {
         val resolvedSensorId = preferredSensorId ?: SensorIdentity.resolveMainSensor()
         val current = CurrentGlucoseSource.getFresh(maxAgeMillis, resolvedSensorId)
         val isMmol = Applic.unit == 1
-        val smoothingMinutes = DataSmoothing.getMinutes(Applic.app)
-        val smoothAllData = smoothingMinutes > 0 && !DataSmoothing.isGraphOnly(Applic.app)
-        val collapseChunks = smoothAllData && DataSmoothing.collapseChunks(Applic.app)
         val now = System.currentTimeMillis()
         val liveHistoryWindowMs = historyWindowMs.coerceAtLeast(LIVE_CONTEXT_WINDOW_MS)
         val historyStart = when {
@@ -61,15 +95,16 @@ object CurrentDisplaySource {
             current = current,
             historyStart = historyStart,
             viewMode = viewMode,
-            smoothAllData = smoothAllData,
-            smoothingMinutes = smoothingMinutes,
-            collapseChunks = collapseChunks
+            smoothAllData = smoothingMode.smoothAllData,
+            smoothingMinutes = smoothingMode.smoothingMinutes,
+            collapseChunks = smoothingMode.collapseChunks
         )
         val initialSnapshot = resolveFromLive(
             liveValueText = current?.valueText,
             liveNumericValue = current?.numericValue ?: Float.NaN,
+            liveCalibratedValue = current?.calibratedNumericValue ?: Float.NaN,
             rate = current?.rate ?: Float.NaN,
-            targetTimeMillis = if (collapseChunks) {
+            targetTimeMillis = if (smoothingMode.collapseChunks) {
                 processedPoints.lastOrNull()?.timestamp ?: current?.timeMillis ?: 0L
             } else {
                 current?.timeMillis ?: processedPoints.lastOrNull()?.timestamp ?: 0L
@@ -119,7 +154,7 @@ object CurrentDisplaySource {
         val resolvedSensorId = preferredSensorId ?: SensorIdentity.resolveMainSensor()
         val isMmol = Applic.unit == 1
         val smoothingMinutes = DataSmoothing.getMinutes(Applic.app)
-        val smoothAllData = smoothingMinutes > 0 && !DataSmoothing.isGraphOnly(Applic.app)
+        val smoothAllData = DataSmoothing.shouldSmoothLocalData(Applic.app)
         val collapseChunks = smoothAllData && DataSmoothing.collapseChunks(Applic.app)
         val liveHistoryWindowMs = historyWindowMs.coerceAtLeast(LIVE_CONTEXT_WINDOW_MS)
         val historyStart = (targetTimeMillis - liveHistoryWindowMs).coerceAtLeast(0L)
@@ -134,6 +169,7 @@ object CurrentDisplaySource {
             valueText = "",
             numericValue = liveNumericValue,
             rawNumericValue = Float.NaN,
+            calibratedNumericValue = Float.NaN,
             rate = rate,
             sensorId = resolvedSensorId,
             sensorGen = sensorGen,
@@ -152,6 +188,7 @@ object CurrentDisplaySource {
         val initialSnapshot = resolveFromLive(
             liveValueText = null,
             liveNumericValue = liveNumericValue,
+            liveCalibratedValue = Float.NaN,
             rate = rate,
             targetTimeMillis = if (collapseChunks) {
                 processedPoints.lastOrNull()?.timestamp ?: targetTimeMillis
@@ -203,6 +240,26 @@ object CurrentDisplaySource {
         }
     }
 
+    private fun localSmoothingMode(): SmoothingMode {
+        val smoothingMinutes = DataSmoothing.getMinutes(Applic.app)
+        val smoothAllData = DataSmoothing.shouldSmoothLocalData(Applic.app)
+        return SmoothingMode(
+            smoothAllData = smoothAllData,
+            smoothingMinutes = smoothingMinutes,
+            collapseChunks = smoothAllData && DataSmoothing.collapseChunks(Applic.app)
+        )
+    }
+
+    private fun exchangeSmoothingMode(): SmoothingMode {
+        val smoothingMinutes = DataSmoothing.getMinutes(Applic.app)
+        val smoothExchangeData = DataSmoothing.shouldSmoothExchangeOutputs(Applic.app)
+        return SmoothingMode(
+            smoothAllData = smoothExchangeData,
+            smoothingMinutes = smoothingMinutes,
+            collapseChunks = smoothExchangeData && DataSmoothing.collapseChunks(Applic.app)
+        )
+    }
+
     @JvmStatic
     fun getFreshNotGlucose(maxAgeMillis: Long): notGlucose? {
         val snapshot = resolveCurrent(maxAgeMillis) ?: return null
@@ -216,6 +273,36 @@ object CurrentDisplaySource {
     fun resolveFromLive(
         liveValueText: String?,
         liveNumericValue: Float,
+        rate: Float,
+        targetTimeMillis: Long,
+        sensorId: String?,
+        sensorGen: Int,
+        index: Int,
+        source: String,
+        recentPoints: List<GlucosePoint>,
+        viewMode: Int,
+        isMmol: Boolean
+    ): Snapshot? =
+        resolveFromLive(
+            liveValueText = liveValueText,
+            liveNumericValue = liveNumericValue,
+            liveCalibratedValue = Float.NaN,
+            rate = rate,
+            targetTimeMillis = targetTimeMillis,
+            sensorId = sensorId,
+            sensorGen = sensorGen,
+            index = index,
+            source = source,
+            recentPoints = recentPoints,
+            viewMode = viewMode,
+            isMmol = isMmol
+        )
+
+    @JvmStatic
+    fun resolveFromLive(
+        liveValueText: String?,
+        liveNumericValue: Float,
+        liveCalibratedValue: Float = Float.NaN,
         rate: Float,
         targetTimeMillis: Long,
         sensorId: String?,
@@ -243,16 +330,31 @@ object CurrentDisplaySource {
             rawValue = liveValue
         }
 
-        val displayValues = exactMatch?.let {
-            resolveDisplayValuesForPoint(
-                point = it,
-                viewMode = viewMode,
-                isMmol = isMmol,
-                sensorId = sensorId
-            )
+        val importedCalibratedValue = liveCalibratedValue
+            .takeIf { it.isFinite() && it > 0.1f }
+        val displayValues = exactMatch?.let { point ->
+            val hideInitialWhenCalibrated = shouldHideInitialWhenCalibrated()
+            if (importedCalibratedValue != null) {
+                DisplayValueResolver.resolve(
+                    autoValue = point.value,
+                    rawValue = point.rawValue,
+                    viewMode = viewMode,
+                    isMmol = isMmol,
+                    unitLabel = "",
+                    calibratedValue = importedCalibratedValue,
+                    hideInitialWhenCalibrated = hideInitialWhenCalibrated
+                )
+            } else {
+                resolveDisplayValuesForPoint(
+                    point = point,
+                    viewMode = viewMode,
+                    isMmol = isMmol,
+                    sensorId = sensorId
+                )
+            }
         } ?: run {
             val hideInitialWhenCalibrated = shouldHideInitialWhenCalibrated()
-            val calibratedValue = resolveCalibratedValue(
+            val calibratedValue = importedCalibratedValue ?: resolveCalibratedValue(
                 liveValue = liveValue,
                 autoValue = autoValue,
                 rawValue = rawValue,
@@ -286,6 +388,7 @@ object CurrentDisplaySource {
             sensorId = sensorId,
             autoValue = autoValue,
             rawValue = rawValue,
+            calibratedValue = liveCalibratedValue,
             targetTimeMillis = resolvedTime,
             isMmol = isMmol
         )
@@ -307,6 +410,7 @@ object CurrentDisplaySource {
             rawValue = rawValue,
             sharedDisplayValue = sharedDisplayValue,
             sharedMgdl = sharedMgdl,
+            isMmol = isMmol,
             displayValues = displayValues
         )
     }
@@ -513,6 +617,14 @@ object CurrentDisplaySource {
             ?: withinWindow.last()
     }
 
+    /**
+     * Canonical per-sensor view mode (auto/raw/auto+raw/raw+auto) resolution,
+     * shared by every multi-sensor surface so the dashboard, notification and
+     * hero card always agree.
+     */
+    @JvmStatic
+    fun resolveViewModeForSensor(sensorName: String?): Int = resolveSensorViewMode(sensorName)
+
     private fun resolveSensorViewMode(sensorName: String?): Int {
         if (sensorName.isNullOrEmpty()) {
             return 0
@@ -534,9 +646,15 @@ object CurrentDisplaySource {
         sensorId: String?,
         autoValue: Float,
         rawValue: Float,
+        calibratedValue: Float,
         targetTimeMillis: Long,
         isMmol: Boolean
     ): Int {
+        val importedCalibratedMgdl = displayToMgdl(calibratedValue, isMmol)
+        if (importedCalibratedMgdl > 0) {
+            return importedCalibratedMgdl
+        }
+
         val calibratedAuto = calibrateForShare(sensorId, autoValue, targetTimeMillis, false)
         if (calibratedAuto > 0f) {
             return displayToMgdl(calibratedAuto, isMmol)

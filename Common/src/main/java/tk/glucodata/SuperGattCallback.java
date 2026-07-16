@@ -198,8 +198,44 @@ public abstract class SuperGattCallback extends BluetoothGattCallback {
     long showtime = Notify.glucosetimeout;
     static long lastfoundL = 0L;
 
+    private static final Object realtimeReadingOrderLock = new Object();
+    private static String realtimeReadingSensorId = null;
+    private static long realtimeReadingTimeMs = 0L;
+
     static long lastfound() {
         return lastfoundL;
+    }
+
+    private static boolean acceptRealtimeReading(String sensorId, long readingTimeMs) {
+        synchronized (realtimeReadingOrderLock) {
+            final boolean sameInMemorySensor = realtimeReadingSensorId != null
+                    && SensorIdentity.matches(sensorId, realtimeReadingSensorId);
+            final long inMemoryHighWaterMs = sameInMemorySensor ? realtimeReadingTimeMs : 0L;
+
+            long nativeHighWaterMs = 0L;
+            try {
+                final String nativeMainSensor = Natives.lastsensorname();
+                if (nativeMainSensor != null && SensorIdentity.matches(sensorId, nativeMainSensor)) {
+                    nativeHighWaterMs = Natives.lastglucosetime();
+                }
+            } catch (Throwable error) {
+                Log.stack(LOG_ID, "acceptRealtimeReading", error);
+            }
+
+            if (!RealtimeReadingPolicy.shouldDispatch(readingTimeMs, inMemoryHighWaterMs, nativeHighWaterMs)) {
+                if (doLog) {
+                    Log.w(LOG_ID, "Ignoring stale realtime callback sensor=" + sensorId
+                            + " time=" + readingTimeMs
+                            + " inMemoryHighWater=" + inMemoryHighWaterMs
+                            + " nativeHighWater=" + nativeHighWaterMs);
+                }
+                return false;
+            }
+
+            realtimeReadingSensorId = sensorId;
+            realtimeReadingTimeMs = Math.max(readingTimeMs, inMemoryHighWaterMs);
+            return true;
+        }
     }
 
     private static long[] nextalarm = new long[10];
@@ -470,6 +506,14 @@ public abstract class SuperGattCallback extends BluetoothGattCallback {
             return;
         }
 
+        // History/replay rows are already persisted before this method. They must not
+        // move notifications, glucose alerts, or the signal-loss deadline backwards.
+        if (!acceptRealtimeReading(SerialNumber, timmsec)) {
+            Applic.updatescreen();
+            UiRefreshBus.requestDataRefresh();
+            return;
+        }
+
         glucosealarms.setagealarm(timmsec, showtime);
         final var alertEvaluation = tk.glucodata.alerts.AlertRuntimeManager.INSTANCE.onNewReading(SerialNumber,
                 gl, rate, timmsec, sensorgen);
@@ -520,7 +564,7 @@ public abstract class SuperGattCallback extends BluetoothGattCallback {
         } catch (Throwable e) {
             Log.stack(LOG_ID, SerialNumber, e);
         }
-        CustomAlertAccess.checkAndTrigger(Applic.app, gl, rate, timmsec);
+        CustomAlertAccess.checkAndTrigger(Applic.app, gl, rate, timmsec, SerialNumber, sensorgen);
         {
             if (doLog) {
                 Log.v(LOG_ID, SerialNumber + " " + tim + " glucose=" + gl + " " + rate);
@@ -555,10 +599,7 @@ public abstract class SuperGattCallback extends BluetoothGattCallback {
         final ExchangeGlucosePayload exchangePayload = shouldResolveExchangePayload
                 ? ExchangeGlucosePayload.resolve(SerialNumber, gl, rate, timmsec, sensorgen, sglucose.value)
                 : null;
-        final boolean collapseExchangeUpdates =
-                DataSmoothing.getMinutes(app) > 0
-                && !DataSmoothing.isGraphOnly(app)
-                && DataSmoothing.collapseChunks(app);
+        final boolean collapseExchangeUpdates = DataSmoothing.shouldCollapseExchangeOutputs(app);
         final boolean shouldEmitExchangeUpdate =
                 exchangePayload != null
                 && shouldEmitExchangeUpdate(exchangePayload.getSensorId(), exchangePayload.getTimeMillis(), collapseExchangeUpdates);
@@ -574,7 +615,12 @@ public abstract class SuperGattCallback extends BluetoothGattCallback {
                     exchangePayload.getRate(),
                     exchangePayload.getTimeMillis(),
                     exchangePayload.getSensorGen(),
+                    exchangePayload.getAutoValue(),
+                    exchangePayload.getAutoMgdl(),
                     exchangePayload.getRawValue(),
+                    exchangePayload.getTrendIndex(),
+                    exchangePayload.getTrendName(),
+                    exchangePayload.getTrendRate(),
                     alarm);
         if (!isWearable) {
             app.numdata.sendglucose(SerialNumber, tim, gl, thresholdchange(rate), alarm | 0x10);
@@ -586,7 +632,7 @@ public abstract class SuperGattCallback extends BluetoothGattCallback {
                 if (Natives.getlibrelinkused() && shouldEmitExchangeUpdate)
                     XInfuus.sendGlucoseBroadcast(exchangePayload.getSensorId(), exchangePayload.getPrimaryMgdl(), exchangePayload.getRate(), exchangePayload.getTimeMillis(), sensorstartmsec);
                 if (Natives.geteverSensebroadcast() && shouldEmitExchangeUpdate)
-                    EverSense.broadcastglucose(exchangePayload.getPrimaryMgdl(), exchangePayload.getRate(), exchangePayload.getTimeMillis());
+                    EverSense.broadcastglucose(exchangePayload);
                 // SendNSClient.broadcastglucose(mgdl, rate, timmsec);
             }
             if (Natives.getxbroadcast() && shouldEmitExchangeUpdate)

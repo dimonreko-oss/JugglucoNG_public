@@ -1,6 +1,8 @@
 package tk.glucodata
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DataSmoothingTests {
@@ -37,5 +39,82 @@ class DataSmoothingTests {
         )
 
         assertEquals(listOf(7L * 60_000L), collapsed.map { it.timestamp })
+    }
+
+    @Test
+    fun shouldSmoothExchangeOutputsFollowsAllDataScopeByDefault() {
+        assertTrue(
+            DataSmoothing.shouldSmoothExchangeOutputs(
+                smoothingMinutes = 5,
+                graphOnly = false,
+                exchangeOutputsOnly = false
+            )
+        )
+
+        assertFalse(
+            DataSmoothing.shouldSmoothExchangeOutputs(
+                smoothingMinutes = 5,
+                graphOnly = true,
+                exchangeOutputsOnly = false
+            )
+        )
+
+        assertTrue(
+            DataSmoothing.shouldSmoothExchangeOutputs(
+                smoothingMinutes = 5,
+                graphOnly = true,
+                exchangeOutputsOnly = true
+            )
+        )
+    }
+
+    @Test
+    fun shouldSmoothExchangeOutputsRequiresEnabledSmoothingWindow() {
+        assertFalse(
+            DataSmoothing.shouldSmoothExchangeOutputs(
+                smoothingMinutes = 0,
+                graphOnly = false,
+                exchangeOutputsOnly = true
+            )
+        )
+    }
+
+    @Test
+    fun shouldCollapseExchangeOutputsRequiresEffectiveExchangeSmoothing() {
+        assertFalse(
+            DataSmoothing.shouldCollapseExchangeOutputs(
+                smoothingMinutes = 5,
+                graphOnly = true,
+                exchangeOutputsOnly = false,
+                collapseChunks = true
+            )
+        )
+
+        assertTrue(
+            DataSmoothing.shouldCollapseExchangeOutputs(
+                smoothingMinutes = 5,
+                graphOnly = false,
+                exchangeOutputsOnly = false,
+                collapseChunks = true
+            )
+        )
+
+        assertTrue(
+            DataSmoothing.shouldCollapseExchangeOutputs(
+                smoothingMinutes = 5,
+                graphOnly = true,
+                exchangeOutputsOnly = true,
+                collapseChunks = true
+            )
+        )
+
+        assertFalse(
+            DataSmoothing.shouldCollapseExchangeOutputs(
+                smoothingMinutes = 5,
+                graphOnly = false,
+                exchangeOutputsOnly = false,
+                collapseChunks = false
+            )
+        )
     }
 }

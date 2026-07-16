@@ -9,8 +9,14 @@ final class ExchangeGlucosePayload {
     final String primaryText;
     final double primaryDisplayValue;
     final int primaryMgdl;
+    final float autoValue;
+    final int autoMgdl;
     final float rawValue;
     final float rate;
+    final int trendIndex;
+    final String trendName;
+    final String trendArrow;
+    final float trendRate;
     final long timeMillis;
     final int sensorGen;
 
@@ -19,16 +25,25 @@ final class ExchangeGlucosePayload {
             String primaryText,
             double primaryDisplayValue,
             int primaryMgdl,
+            float autoValue,
+            int autoMgdl,
             float rawValue,
             float rate,
+            ExchangeTrend trend,
             long timeMillis,
             int sensorGen) {
         this.sensorId = sensorId;
         this.primaryText = primaryText;
         this.primaryDisplayValue = primaryDisplayValue;
         this.primaryMgdl = primaryMgdl;
+        this.autoValue = autoValue;
+        this.autoMgdl = autoMgdl;
         this.rawValue = rawValue;
         this.rate = rate;
+        this.trendIndex = trend.index;
+        this.trendName = trend.name;
+        this.trendArrow = trend.arrow;
+        this.trendRate = trend.rateMgdlPerMinute;
         this.timeMillis = timeMillis;
         this.sensorGen = sensorGen;
     }
@@ -49,12 +64,36 @@ final class ExchangeGlucosePayload {
         return primaryMgdl;
     }
 
+    float getAutoValue() {
+        return autoValue;
+    }
+
+    int getAutoMgdl() {
+        return autoMgdl;
+    }
+
     float getRawValue() {
         return rawValue;
     }
 
     float getRate() {
         return rate;
+    }
+
+    int getTrendIndex() {
+        return trendIndex;
+    }
+
+    String getTrendName() {
+        return trendName;
+    }
+
+    String getTrendArrow() {
+        return trendArrow;
+    }
+
+    float getTrendRate() {
+        return trendRate;
     }
 
     long getTimeMillis() {
@@ -74,10 +113,10 @@ final class ExchangeGlucosePayload {
             String fallbackPrimaryText) {
         CurrentDisplaySource.Snapshot current = null;
         try {
-            current = CurrentDisplaySource.resolveCurrent(Notify.glucosetimeout, preferredSensorId);
+            current = CurrentDisplaySource.resolveCurrentForExchange(Notify.glucosetimeout, preferredSensorId);
         } catch (Throwable th) {
             if (Log.doLog) {
-                Log.i("ExchangeGlucosePayload", "resolveCurrent failed " + th);
+                Log.i("ExchangeGlucosePayload", "resolveCurrentForExchange failed " + th);
             }
         }
 
@@ -96,14 +135,20 @@ final class ExchangeGlucosePayload {
             final long timeMillis = current.getTimeMillis() > 0L ? current.getTimeMillis() : fallbackTimeMillis;
             final int sensorGen = current.getSensorGen() != 0 ? current.getSensorGen() : fallbackSensorGen;
             final int primaryMgdl = toMgdl(primaryDisplayValue);
+            final float autoValue = current.getAutoValue();
+            final int autoMgdl = toMgdl(autoValue);
             final float rawValue = current.getRawValue();
+            final ExchangeTrend trend = ExchangeTrend.resolve(sensorId, timeMillis, rate);
             return new ExchangeGlucosePayload(
                     sensorId,
                     primaryText,
                     primaryDisplayValue,
                     primaryMgdl,
+                    autoValue,
+                    autoMgdl,
                     rawValue,
                     rate,
+                    trend,
                     timeMillis,
                     sensorGen);
         }
@@ -118,7 +163,10 @@ final class ExchangeGlucosePayload {
                 fallbackDisplayValue,
                 toMgdl(fallbackDisplayValue),
                 Float.NaN,
+                0,
+                Float.NaN,
                 fallbackRate,
+                ExchangeTrend.resolve(fallbackSensorId, fallbackTimeMillis, fallbackRate),
                 fallbackTimeMillis,
                 fallbackSensorGen);
     }

@@ -2,6 +2,7 @@ package tk.glucodata
 
 import java.util.LinkedHashSet
 import java.util.concurrent.ConcurrentHashMap
+import tk.glucodata.drivers.ManagedBluetoothSensorDriver
 import tk.glucodata.drivers.ManagedSensorIdentityRegistry
 
 object SensorIdentity {
@@ -141,10 +142,28 @@ object SensorIdentity {
     @JvmStatic
     fun shouldUseNativeHistorySync(sensorId: String?): Boolean {
         val raw = normalized(sensorId) ?: return true
+        managedDriverHistorySync(raw)?.let { return it }
         val canonical = canonicalOrRaw(raw) ?: raw
+        if (!canonical.equals(raw, ignoreCase = true)) {
+            managedDriverHistorySync(canonical)?.let { return it }
+        }
         return ManagedSensorIdentityRegistry.shouldUseNativeHistorySync(canonical)
             ?: ManagedSensorIdentityRegistry.shouldUseNativeHistorySync(raw)
             ?: true
+    }
+
+    private fun managedDriverHistorySync(sensorId: String?): Boolean? {
+        val raw = normalized(sensorId) ?: return null
+        return runCatching {
+            SensorBluetooth.mygatts()
+                .asSequence()
+                .mapNotNull { it as? ManagedBluetoothSensorDriver }
+                .mapNotNull { driver ->
+                    val matches = runCatching { driver.matchesManagedSensorId(raw) }.getOrDefault(false)
+                    if (matches) runCatching { driver.shouldUseNativeHistorySync() }.getOrNull() else null
+                }
+                .firstOrNull()
+        }.getOrNull()
     }
 
     @JvmStatic
@@ -166,23 +185,16 @@ object SensorIdentity {
 
     @JvmStatic
     fun resolveMainSensor(): String? {
-        val managed = canonicalOrRaw(ManagedCurrentSensor.get())
-        if (!managed.isNullOrBlank()) {
-            return managed
-        }
-        val main = resolveAppSensorId(Natives.lastsensorname())
-        if (!main.isNullOrBlank()) {
-            return main
-        }
-        return Natives.activeSensors()
-            ?.asSequence()
-            ?.mapNotNull(::resolveAppSensorId)
-            ?.firstOrNull { !it.isNullOrBlank() }
+        return resolveAvailableMainSensor(
+            selectedMain = Natives.lastsensorname(),
+            preferredSensorId = null,
+            activeSensors = availableSensorCandidates()
+        )
     }
 
     @JvmStatic
     fun resolveLiveMainSensor(preferredSensorId: String?): String? {
-        val activeSensors = Natives.activeSensors()
+        val activeSensors = availableSensorCandidates()
         if (activeSensors.isNullOrEmpty()) {
             return resolveMainSensor()
         }
@@ -193,6 +205,24 @@ object SensorIdentity {
         ) ?: resolveMainSensor()
     }
 
+    private fun availableSensorCandidates(): Array<String?>? {
+        val resolved = LinkedHashSet<String?>()
+
+        runCatching {
+            Natives.activeSensors()?.forEach { sensorId ->
+                normalized(sensorId)?.let(resolved::add)
+            }
+        }
+
+        runCatching {
+            SensorBluetooth.mygatts().forEach { callback ->
+                normalized(callback.SerialNumber)?.let(resolved::add)
+            }
+        }
+
+        return resolved.takeIf { it.isNotEmpty() }?.toTypedArray()
+    }
+
     @JvmStatic
     fun resolveAvailableMainSensor(
         selectedMain: String?,
@@ -200,9 +230,6 @@ object SensorIdentity {
         activeSensors: Array<String?>?
     ): String? {
         val managed = canonicalOrRaw(ManagedCurrentSensor.get())
-        if (!managed.isNullOrBlank()) {
-            return managed
-        }
         val active = activeSensors
             ?.mapNotNull(::canonicalOrRaw)
             ?.distinct()
@@ -211,7 +238,11 @@ object SensorIdentity {
         val canonicalPreferred = canonicalOrRaw(preferredSensorId)
 
         if (active.isEmpty()) {
-            return canonicalSelected ?: canonicalPreferred
+            return managed ?: canonicalSelected ?: canonicalPreferred
+        }
+
+        if (managed != null && active.any { matches(it, managed) }) {
+            return managed
         }
 
         if (canonicalSelected != null && active.any { matches(it, canonicalSelected) }) {

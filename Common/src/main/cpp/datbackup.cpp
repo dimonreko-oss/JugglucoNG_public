@@ -75,7 +75,8 @@ int updateone::updateiob() {
            const auto endinsulin=offsetof(Tings,iobupdate)+sizeof(Tings::iobupdate);
            LOGGER("updateiob start=%zd end=%zd\n",startinsulin,endinsulin);
            vect.push_back({reinterpret_cast<const senddata_t *>(settings->data()->insulintypes),startinsulin,endinsulin-startinsulin});
-           if(!getConnect()->senddata(pass,vect,settingsdat) )
+           auto *con0=getConnect();
+           if(!con0||!con0->senddata(pass,vect,settingsdat) )
                     return 0;
             iobupdated=iobupdate;
             return 1;
@@ -85,7 +86,9 @@ int updateone::updateiob() {
 
 
 int updateone::sendCalibrate() {
-    return sensors->sendCalibrates(getcrypt(), getConnect(),ind,startSendCalibrate);
+    auto *con=getConnect();
+    if(!con) return 0;
+    return sensors->sendCalibrates(getcrypt(), con,ind,startSendCalibrate);
     }
 
 
@@ -114,7 +117,8 @@ int updateone::numbertypes() {
        LOGGER("librenums start=%zd end=%zd\n",startnight,endnight);
        vect.push_back({reinterpret_cast<const senddata_t *>(settings->data()->librenums),startnight,endnight-startnight});
        }
-   if(!getConnect()->senddata(getcrypt(),vect,settingsdat) )
+   auto *con1=getConnect();
+   if(!con1||!con1->senddata(getcrypt(),vect,settingsdat) )
         return 0;
     sendLibre=false;
     sendNight=false;
@@ -123,8 +127,8 @@ int updateone::numbertypes() {
 #endif
 
 int updateone::update() {
-    Connect *connect=getConnect();    
-    if(!connect->isConnectedSender())
+    Connect *connect=getConnect();
+    if(!connect || !connect->isConnectedSender())
         return 0;
     crypt_t *pass=getcrypt();
 
@@ -252,7 +256,7 @@ int     updateone::updatenums() {
         return update();
         }
     Connect *connect=getConnect();
-    if(!connect->isConnectedSender())
+    if(!connect || !connect->isConnectedSender())
         return 0;
     if(!sendjugglucoid) {
         LOGAR("updatenums sendjugglucoid");
@@ -278,7 +282,7 @@ int  updateone::updatestreamu() {
         return update();
         }
     Connect *connect=getConnect();
-    if(!connect->isConnectedSender())
+    if(!connect || !connect->isConnectedSender())
         return 0;
     return sensors->updatestreams(getcrypt(),connect,ind,firstsensor,sendscans?2:1);
      } 
@@ -289,7 +293,7 @@ int updateone::updatescansu() {
         return update();
         }
     Connect *connect=getConnect();
-    if(!connect->isConnectedSender())
+    if(!connect || !connect->isConnectedSender())
         return 0;
     return sensors->updatescanss(getcrypt(),connect,ind,firstsensor,sendstream);
      } 
@@ -423,7 +427,6 @@ static void sendup(passhost_t *hostptr) {
     }
 
 std::vector<Backup::condvar_t*> active_receive;
-int active_receivenr=0;
 
 #include <chrono>
 using namespace std::chrono_literals;
@@ -436,8 +439,8 @@ void activereceivethread(int allindex,passhost_t *pass) {
         LOGGER("activereceivethread h(%d)<0\n", h);
         return;
     }
-    if(h >= active_receivenr) {
-        LOGGER("activereceivethread h(%d)>=active_receivenr(%zd)\n", h, active_receivenr);
+    if(static_cast<size_t>(h) >= active_receive.size()) {
+        LOGGER("activereceivethread h(%d)>=active_receive.size()(%zu)\n", h, active_receive.size());
         return;
     }
     if(!active_receive[h]) {
@@ -489,7 +492,7 @@ void activereceivethread(int allindex,passhost_t *pass) {
             }
             }
        LOGGER("before if(!active_receive[%d]) %p \n",h,active_receive[h]);
-       if(h>=active_receivenr||!active_receive[h]) {
+       if(static_cast<size_t>(h)>=active_receive.size()||!active_receive[h]) {
             LOGGER("active_receive[%d]==0, return\n",h);
             return;
           }
@@ -836,10 +839,9 @@ Backup::Backup(std::string_view base): mapdata(base,backupdat,sizeof(struct upda
       else
           connections[i]=new TCPConnect(i);
       }
-  // sendsocks.reserve(getupdatedata()->sendnr);
+   sendsocks.resize(getupdatedata()->sendnr, -1);
    crypts.reserve(getupdatedata()->sendnr);
    for(int i=0;i<getupdatedata()->sendnr;i++) {
-       //sendsocks.push_back(-1);
        auto &host=getupdatedata()->tosend[i];
        if(settings->data()->initVersion<31) { 
           LOGGER("%d set sendjugglucoid=false\n",i);

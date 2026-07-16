@@ -13,8 +13,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import tk.glucodata.R
 import tk.glucodata.alerts.AlertConfig
@@ -135,10 +133,10 @@ fun CommonAlertSettings(
                 unselectedContentColor = MaterialTheme.colorScheme.onPrimaryContainer
             )
 
-            AnimatedVisibility(visible = config.vibrationEnabled) {
+            AnimatedVisibility(visible = config.soundEnabled || config.vibrationEnabled) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = stringResource(R.string.haptics),
+                        text = stringResource(R.string.intensity),
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

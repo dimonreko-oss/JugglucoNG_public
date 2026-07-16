@@ -78,17 +78,7 @@ fun SensorSelectionCards(
                 .padding(horizontal = horizontalPadding),
             verticalArrangement = Arrangement.spacedBy(cardGap) // Generous spacing (M3 Expressive)
         ) {
-            // Sibionics
-            SensorCard(
-                icon = Icons.Default.QrCodeScanner,
-                title = stringResource(R.string.sibionics_sensor),
-                subtitle = stringResource(R.string.sibionics_sensor_desc),
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                onClick = { onSensorSelected(SensorType.SIBIONICS) },
-                compact = compact
-            )
-            
+
             // Libre 2/3
             SensorCard(
                 icon = Icons.Default.Nfc,
@@ -99,7 +89,18 @@ fun SensorSelectionCards(
                 onClick = { onSensorSelected(SensorType.LIBRE) },
                 compact = compact
             )
-            
+
+            // Sibionics
+            SensorCard(
+                icon = Icons.Default.QrCodeScanner,
+                title = stringResource(R.string.sibionics_sensor),
+                subtitle = stringResource(R.string.sibionics_sensor_desc),
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                onClick = { onSensorSelected(SensorType.SIBIONICS) },
+                compact = compact
+            )
+
             // Dexcom
             SensorCard(
                 icon = Icons.Default.QrCodeScanner,
@@ -111,28 +112,7 @@ fun SensorSelectionCards(
                 compact = compact
             )
 
-            // Accu-Chek SmartGuide
-            SensorCard(
-                icon = Icons.Default.QrCodeScanner,
-                title = stringResource(R.string.accuchek_sensor),
-                subtitle = stringResource(R.string.accuchek_sensor_desc),
-                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                onClick = { onSensorSelected(SensorType.ACCUCHEK) },
-                compact = compact
-            )
 
-            // CareSens Air
-            SensorCard(
-                icon = Icons.Default.QrCodeScanner,
-                title = stringResource(R.string.caresens_air_sensor),
-                subtitle = stringResource(R.string.caresens_air_sensor_desc),
-                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                onClick = { onSensorSelected(SensorType.CARESENS_AIR) },
-                compact = compact
-            )
-            
             // AiDex / LinX
             SensorCard(
                 icon = Icons.Default.Bluetooth,
@@ -153,7 +133,15 @@ fun SensorSelectionCards(
                 onClick = { onSensorSelected(SensorType.ICANHEALTH) },
                 compact = compact
             )
-
+            SensorCard(
+                icon = Icons.Default.Bluetooth,
+                title = stringResource(R.string.anytime_sensor),
+                subtitle = stringResource(R.string.anytime_sensor_desc),
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                onClick = { onSensorSelected(SensorType.ANYTIME) },
+                compact = compact
+            )
             SensorCard(
                 icon = Icons.Default.Bluetooth,
                 title = stringResource(R.string.mq_sensor),
@@ -163,14 +151,36 @@ fun SensorSelectionCards(
                 onClick = { onSensorSelected(SensorType.MQ) },
                 compact = compact
             )
-
             SensorCard(
                 icon = Icons.Default.Bluetooth,
-                title = stringResource(R.string.anytime_sensor),
-                subtitle = stringResource(R.string.anytime_sensor_desc),
+                title = stringResource(R.string.ottai_sensor),
+                subtitle = stringResource(R.string.ottai_sensor_desc),
                 containerColor = MaterialTheme.colorScheme.secondaryContainer,
                 contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                onClick = { onSensorSelected(SensorType.ANYTIME) },
+                onClick = { onSensorSelected(SensorType.OTTAI) },
+                compact = compact
+            )
+
+
+            // Accu-Chek SmartGuide
+            SensorCard(
+                icon = Icons.Default.QrCodeScanner,
+                title = stringResource(R.string.accuchek_sensor),
+                subtitle = stringResource(R.string.accuchek_sensor_desc),
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                onClick = { onSensorSelected(SensorType.ACCUCHEK) },
+                compact = compact
+            )
+
+            // CareSens Air
+            SensorCard(
+                icon = Icons.Default.QrCodeScanner,
+                title = stringResource(R.string.caresens_air_sensor),
+                subtitle = stringResource(R.string.caresens_air_sensor_desc),
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                onClick = { onSensorSelected(SensorType.CARESENS_AIR) },
                 compact = compact
             )
         }
@@ -323,7 +333,8 @@ fun ImportHistoryCard(
 fun DashboardEmptyState(
     onSensorSelected: (SensorType) -> Unit,
     onImportHistory: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    readinessContent: (@Composable () -> Unit)? = null
 ) {
     val compact = rememberAdaptiveWindowMetrics().isCompact
     val sidePadding = 16.dp
@@ -366,6 +377,11 @@ fun DashboardEmptyState(
         )
 
         Spacer(modifier = Modifier.height(if (compact) 16.dp else 20.dp))
+
+        readinessContent?.let { content ->
+            content()
+            Spacer(modifier = Modifier.height(if (compact) 12.dp else 16.dp))
+        }
 
         SensorSelectionCards(
             onSensorSelected = onSensorSelected

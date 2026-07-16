@@ -81,6 +81,14 @@ interface HistoryDao {
     
     @Query("SELECT * FROM history_readings WHERE timestamp >= :startTime ORDER BY timestamp ASC")
     suspend fun getReadingsSince(startTime: Long): List<HistoryReading>
+
+    @Query("""
+        SELECT * FROM history_readings
+        WHERE timestamp >= :startTime
+          AND timestamp <= :endTime
+        ORDER BY timestamp ASC
+    """)
+    suspend fun getReadingsBetween(startTime: Long, endTime: Long): List<HistoryReading>
     
     @Query("SELECT * FROM history_readings ORDER BY timestamp DESC LIMIT 1")
     suspend fun getLatestReading(): HistoryReading?
@@ -107,6 +115,12 @@ interface HistoryDao {
         WHERE sensorSerial IN (:serials) AND timestamp = :timestamp
     """)
     suspend fun deleteReadingsAtTimestamp(serials: List<String>, timestamp: Long): Int
+
+    @Query("""
+        DELETE FROM history_readings
+        WHERE sensorSerial IN (:serials) AND timestamp > :timestampExclusive
+    """)
+    suspend fun deleteReadingsForSensorsAfter(serials: List<String>, timestampExclusive: Long): Int
 
     @Query("""
         SELECT COUNT(*) FROM history_deleted_readings
@@ -146,13 +160,12 @@ interface HistoryDao {
     @Query("""
         DELETE FROM history_readings
         WHERE sensorSerial = :sensorSerial
-          AND (timestamp / :bucketDurationMs) IN (:bucketIds)
-          AND timestamp NOT IN (:protectedTimestamps)
+          AND timestamp >= :startTimeInclusive
+          AND timestamp < :endTimeExclusive
     """)
-    suspend fun deleteConflictingSensorRowsForBuckets(
+    suspend fun deleteSensorRowsInTimeRange(
         sensorSerial: String,
-        bucketDurationMs: Long,
-        bucketIds: List<Long>,
-        protectedTimestamps: List<Long>
+        startTimeInclusive: Long,
+        endTimeExclusive: Long
     ): Int
 }

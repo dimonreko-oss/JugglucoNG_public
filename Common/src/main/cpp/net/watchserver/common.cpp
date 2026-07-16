@@ -61,7 +61,9 @@ int resolveExportedMgdl(const SensorGlucoseData *sens, const ScanData *val,
             env->ExceptionClear();
         return autoMgdl;
         }
-    auto jsensor=env->NewStringUTF(sensorname->data());
+    char sensornameStr[64];
+    copyfixedsensorname(sensornameStr,sizeof(sensornameStr),sensorname);
+    auto jsensor=env->NewStringUTF(sensornameStr);
     const auto *info=sens->getinfo();
     const int viewMode=info?info->viewMode:0;
     const int rawCurrent=sens->getRawForPoll(val);
@@ -93,6 +95,28 @@ const ScanData *makeExportedScan(const SensorGlucoseData *sens,
     if(mgdL>0)
         storage.g=mgdL;
     return &storage;
+    }
+
+int getExchangeOutputIntervalSeconds() {
+    auto env=getenv();
+    if(env==nullptr||!ensureexportvalueclass(env))
+        return 0;
+    const static jmethodID intervalMethod = env->GetStaticMethodID(
+        exportvalueclass,
+        "getExchangeOutputIntervalSeconds",
+        "()I"
+    );
+    if(intervalMethod==nullptr) {
+        if(env->ExceptionCheck())
+            env->ExceptionClear();
+        return 0;
+        }
+    const int seconds=env->CallStaticIntMethod(exportvalueclass,intervalMethod);
+    if(env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return 0;
+        }
+    return seconds>0?seconds:0;
     }
 int mkv3streamid(char *outiter,const sensorname_t *name,int num) { 
 //LOGGER("sensorname=%s\n",name->data());

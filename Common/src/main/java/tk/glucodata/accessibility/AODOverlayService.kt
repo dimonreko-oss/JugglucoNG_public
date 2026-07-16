@@ -33,6 +33,7 @@ import tk.glucodata.GlucosePoint
 import tk.glucodata.Natives
 import tk.glucodata.NotificationHistorySource
 import tk.glucodata.NotificationChartDrawer
+import tk.glucodata.NotificationMultiSensorSource
 import tk.glucodata.Notify
 import tk.glucodata.R
 import tk.glucodata.SensorBluetooth
@@ -65,6 +66,7 @@ class AODOverlayService : AccessibilityService(), SensorEventListener {
     private var xOffset = 0
     private var yOffset = 0
     private var currentOverlayPosition = "TOP"
+    private var currentChartAnchorFraction = 0.5f
 
     private val broadcastFollowUpRunnable = Runnable {
         if (overlayView?.visibility == View.VISIBLE) {
@@ -336,6 +338,7 @@ class AODOverlayService : AccessibilityService(), SensorEventListener {
         // Default to TOP if empty or missing
         // Alignment logic
         val alignment = prefs.getString("aod_alignment", "CENTER") ?: "CENTER"
+        val showChart = prefs.getBoolean("aod_show_chart", true)
         
         // Apply Opacity (combined with light sensor)
         updateAlpha()
@@ -358,7 +361,16 @@ class AODOverlayService : AccessibilityService(), SensorEventListener {
         val rootLayout = view.findViewById<android.widget.LinearLayout>(R.id.aod_root)
         val textContainer = view.findViewById<android.widget.LinearLayout>(R.id.aod_text_container)
         var alignGravity = Gravity.CENTER_HORIZONTAL
-        when(alignment) {
+        val effectiveAlignment = if (showChart && alignment == "CENTER") {
+            when {
+                currentChartAnchorFraction < 0.38f -> "LEFT"
+                currentChartAnchorFraction > 0.62f -> "RIGHT"
+                else -> "CENTER"
+            }
+        } else {
+            alignment
+        }
+        when(effectiveAlignment) {
             "LEFT" -> alignGravity = Gravity.START
             "CENTER" -> alignGravity = Gravity.CENTER_HORIZONTAL
             "RIGHT" -> alignGravity = Gravity.END
@@ -448,6 +460,7 @@ class AODOverlayService : AccessibilityService(), SensorEventListener {
             viewMode = resolvedDisplay.viewMode
         }
         val overlayChartPoints = DisplayTrendSource.augmentHistory(chartPoints, resolvedDisplay, activeSensorSerial, startT)
+        currentChartAnchorFraction = estimateChartAnchorFraction(overlayChartPoints, startT, endT)
         val hasCalibration = tk.glucodata.NightscoutCalibration.hasCalibrationForViewMode(activeSensorSerial, viewMode)
 
         if (resolvedDisplay != null) {
@@ -464,6 +477,21 @@ class AODOverlayService : AccessibilityService(), SensorEventListener {
         val displayRate = DisplayTrendSource.resolveArrowRate(overlayChartPoints, resolvedDisplay, viewMode, isMmol)
 
         val glucoseColor = NotificationChartDrawer.getGlucoseColor(this, glvalue, isMmol)
+        val peerCurrents = NotificationMultiSensorSource.peerCurrents(
+            tk.glucodata.Notify.glucosetimeout,
+            activeSensorSerial
+        )
+        val peerValueItems = NotificationMultiSensorSource.valueItems(peerCurrents)
+        // Match the dashboard: tint the primary value/arrow with its identity color.
+        val primaryDisplayColor = if (peerValueItems.isNotEmpty()) {
+            tk.glucodata.SensorVisuals.blendArgb(
+                glucoseColor,
+                tk.glucodata.SensorVisuals.colorArgb(activeSensorSerial),
+                tk.glucodata.SensorVisuals.PRIMARY_TEXT_BLEND
+            )
+        } else {
+            glucoseColor
+        }
 
         // Draw Components
         val fontSource = prefs.getString("aod_font_source", "APP") ?: "APP"
@@ -475,15 +503,29 @@ class AODOverlayService : AccessibilityService(), SensorEventListener {
         // Arrow Settings
         val showArrow = prefs.getBoolean("aod_show_arrow", true)
         val arrowScale = prefs.getFloat("aod_arrow_scale", 2.0f)
+        // Multi-sensor: arrows render inline next to each value; the external
+        // arrow view would visually attach to the last peer value otherwise.
+        val inlineMultiArrows = showArrow && peerValueItems.isNotEmpty()
 
         // Use textScale here for high-res bitmap generation
-        val textBitmap = NotificationChartDrawer.drawGlucoseText(this, valStr, glucoseColor, textScale, fontWeight, useSystemFont)
+        val textBitmap = NotificationChartDrawer.drawMultiGlucoseText(
+            this,
+            valStr,
+            primaryDisplayColor,
+            peerValueItems,
+            textScale,
+            fontWeight,
+            useSystemFont,
+            if (inlineMultiArrows) displayRate else Float.NaN,
+            isMmol,
+            1.0f
+        )
         val textImg = view.findViewById<ImageView>(R.id.notification_glucose)
         textImg?.setImageBitmap(textBitmap)
 
         // Pass combined scale to arrow
         val arrowImg = view.findViewById<ImageView>(R.id.notification_arrow)
-        if (showArrow) {
+        if (showArrow && !inlineMultiArrows) {
             val arrowBitmap = NotificationChartDrawer.drawArrow(
                 this,
                 displayRate,
@@ -507,8 +549,9 @@ class AODOverlayService : AccessibilityService(), SensorEventListener {
             val baseChartHeightPx = (200 * dm.density).toInt()
             val renderWidth = (dm.widthPixels * 1.5f).toInt()
             val renderHeight = (baseChartHeightPx * 1.5f).toInt()
+            val peerChartSeries = NotificationMultiSensorSource.peerSeries(peerCurrents, startT, isMmol)
 
-            val chartBitmap = NotificationChartDrawer.drawChart(
+            val chartBitmap = NotificationChartDrawer.drawChartWithPrediction(
                 this,
                 overlayChartPoints,
                 renderWidth,
@@ -517,7 +560,9 @@ class AODOverlayService : AccessibilityService(), SensorEventListener {
                 viewMode,
                 true,
                 hasCalibration,
-                activeSensorSerial
+                false,
+                activeSensorSerial,
+                peerChartSeries
             )
             if (chartImg != null) {
                 chartImg.layoutParams = chartImg.layoutParams?.also { params ->
@@ -542,6 +587,15 @@ class AODOverlayService : AccessibilityService(), SensorEventListener {
                 statusView.visibility = View.GONE
             }
         }
+        applyBurnInProtection()
+    }
+
+    private fun estimateChartAnchorFraction(points: List<GlucosePoint>, startT: Long, endT: Long): Float {
+        if (points.isEmpty() || endT <= startT) {
+            return 0.5f
+        }
+        val latestTimestamp = points.maxOf { it.timestamp }
+        return ((latestTimestamp - startT).toFloat() / (endT - startT).toFloat()).coerceIn(0f, 1f)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {

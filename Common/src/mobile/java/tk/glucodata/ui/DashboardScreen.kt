@@ -82,6 +82,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.graphics.RectangleShape
+import tk.glucodata.SensorIdentity
 import tk.glucodata.ui.util.ConnectedButtonGroup
 import tk.glucodata.ui.util.AdaptiveLayoutDensity
 import tk.glucodata.ui.util.findActivity
@@ -149,6 +150,7 @@ import tk.glucodata.UiRefreshBus
 import android.widget.Toast
 import tk.glucodata.data.journal.JournalEntry
 import tk.glucodata.data.journal.JournalEntryType
+import tk.glucodata.data.journal.JournalFood
 import tk.glucodata.data.journal.JournalInsulinPreset
 import tk.glucodata.data.prediction.GlucosePredictionSeries
 import tk.glucodata.data.prediction.GlucosePredictionSeriesKind
@@ -156,13 +158,11 @@ import tk.glucodata.data.prediction.PredictiveSimulationSettings
 import tk.glucodata.data.prediction.buildGlucosePrediction
 import tk.glucodata.ui.journal.JournalDoseProfile
 import tk.glucodata.ui.journal.JournalEntrySheet
+import tk.glucodata.ui.journal.JournalFloatingActionMenu
 import tk.glucodata.ui.journal.JournalInlineChip
 import tk.glucodata.ui.journal.JournalSettingsScreen
-import tk.glucodata.ui.journal.buildActiveInsulinSummary
+import tk.glucodata.data.journal.JournalIobCalculator
 import tk.glucodata.ui.journal.buildJournalChartMarkers
-import tk.glucodata.ui.journal.journalTypeColor
-import tk.glucodata.ui.journal.journalTypeSelectedContainerColor
-import tk.glucodata.ui.journal.journalTypeSubtleContainerColor
 import tk.glucodata.ui.viewmodel.DashboardViewModel
 import tk.glucodata.ui.theme.displayLargeExpressive
 import androidx.appcompat.app.AppCompatDelegate
@@ -288,17 +288,34 @@ fun DashboardScreen(
     val sensorName by viewModel.sensorName.collectAsState()
     val daysRemaining by viewModel.daysRemaining.collectAsState()
     val glucoseHistory by viewModel.glucoseHistory.collectAsState()
+    val multiSensorDisplay by viewModel.multiSensorDisplay.collectAsState()
+    val peerCurrentReadings by viewModel.peerCurrentReadings.collectAsState()
+    val selectedSensorIds by viewModel.selectedSensorIds.collectAsState()
+    val sensorViewModes by viewModel.sensorViewModes.collectAsState()
+    // Multi-sensor mode is active whenever more than one sensor is selected —
+    // stable across new readings, so per-row tinting never flashes uncolored.
+    val multiSensorActive = selectedSensorIds.size > 1
     val unit by viewModel.unit.collectAsState()
     val graphLow by viewModel.graphLow.collectAsState()
     val graphHigh by viewModel.graphHigh.collectAsState()
     val targetLow by viewModel.targetLow.collectAsState()
     val targetHigh by viewModel.targetHigh.collectAsState()
+    val veryLowThreshold by viewModel.veryLowThreshold.collectAsState()
+    val veryHighThreshold by viewModel.veryHighThreshold.collectAsState()
     val chartSmoothingMinutes by viewModel.chartSmoothingMinutes.collectAsState()
     val dataSmoothingGraphOnly by viewModel.dataSmoothingGraphOnly.collectAsState()
     val dataSmoothingCollapseChunks by viewModel.dataSmoothingCollapseChunks.collectAsState()
+    val dataSmoothingExchangeOnly by viewModel.dataSmoothingExchangeOnly.collectAsState()
+    val visualSmoothingMinutes = if (dataSmoothingExchangeOnly) 0 else chartSmoothingMinutes
     val previewWindowMode by viewModel.previewWindowMode.collectAsState()
     val journalEnabled by viewModel.journalEnabled.collectAsState()
+    val journalEiobDisplayEnabled by viewModel.journalEiobDisplayEnabled.collectAsState()
+    val glucoseRangeColorsDisplayEnabled by viewModel.glucoseValueRangeColorsEnabled.collectAsState()
+    val glucoseArrowForecastEnabled by viewModel.glucoseArrowForecastColorsEnabled.collectAsState()
+    val appChartRangeColorsEnabled by viewModel.glucoseAppChartRangeColorsEnabled.collectAsState()
     val journalDoseCalculatorEnabled by viewModel.journalDoseCalculatorEnabled.collectAsState()
+    val journalFoodMacrosEnabled by viewModel.journalFoodMacrosEnabled.collectAsState()
+    val journalFoodLibraryEnabled by viewModel.journalFoodLibraryEnabled.collectAsState()
     val predictiveSimulationEnabled by viewModel.predictiveSimulationEnabled.collectAsState()
     val predictionTrendMomentumEnabled by viewModel.predictionTrendMomentumEnabled.collectAsState()
     val predictionCarbRatioGramsPerUnit by viewModel.predictionCarbRatioGramsPerUnit.collectAsState()
@@ -307,6 +324,7 @@ fun DashboardScreen(
     val predictionHorizonMinutes by viewModel.predictionHorizonMinutes.collectAsState()
     val journalEntries by viewModel.journalEntries.collectAsState()
     val journalInsulinPresets by viewModel.journalInsulinPresets.collectAsState()
+    val journalFoods by viewModel.journalFoods.collectAsState()
     val sensorStatus by viewModel.sensorStatus.collectAsState()
     val sensorProgress by viewModel.sensorProgress.collectAsState()
     val viewMode by viewModel.viewMode.collectAsState()
@@ -315,8 +333,7 @@ fun DashboardScreen(
     val sensorHoursRemaining by viewModel.sensorHoursRemaining.collectAsState()
     val currentDay by viewModel.currentDay.collectAsState()
     val predictionCalibrationRefresh by UiRefreshBus.revision.collectAsState(initial = 0L)
-    val isRawEnabled by tk.glucodata.data.calibration.CalibrationManager.isEnabledForRaw.collectAsState()
-    val isAutoEnabled by tk.glucodata.data.calibration.CalibrationManager.isEnabledForAuto.collectAsState()
+    val calibrationRevision by tk.glucodata.data.calibration.CalibrationManager.revision.collectAsState()
 
     // Initialize Calibration Manager
     LaunchedEffect(Unit) {
@@ -333,6 +350,7 @@ fun DashboardScreen(
     var showICanHealthWizard by remember { mutableStateOf(false) }
     var showMQWizard by remember { mutableStateOf(false) }
     var showAnytimeWizard by remember { mutableStateOf(false) }
+    var showOttaiWizard by remember { mutableStateOf(false) }
     var journalEditorRequest by remember { mutableStateOf<JournalEditorRequest?>(null) }
     var journalActionTimestamp by rememberSaveable { mutableStateOf<Long?>(null) }
     var journalActionSuggestedGlucoseMgDl by remember { mutableStateOf<Float?>(null) }
@@ -343,6 +361,7 @@ fun DashboardScreen(
 
     val coroutineScope = rememberCoroutineScope()
     val journalPresetsById = remember(journalInsulinPresets) { journalInsulinPresets.associateBy { it.id } }
+    val journalFoodsById = remember(journalFoods) { journalFoods.associateBy { it.id } }
     val activeJournalPresets = remember(journalInsulinPresets) { journalInsulinPresets.filter { !it.isArchived } }
     // Mirror the History route: journal entries are time-bound, not
     // sensor-bound. Scoping them by the active sensor would silently hide
@@ -350,18 +369,18 @@ fun DashboardScreen(
     val scopedJournalEntries = remember(journalEnabled, journalEntries) {
         if (!journalEnabled) emptyList() else journalEntries
     }
-    val journalChartMarkers = remember(journalEnabled, scopedJournalEntries, journalPresetsById, unit, glucoseHistory) {
+    val journalChartMarkers = remember(journalEnabled, scopedJournalEntries, journalPresetsById, journalFoodsById, unit, glucoseHistory) {
         if (!journalEnabled || scopedJournalEntries.isEmpty()) {
             emptyList()
         } else {
-            buildJournalChartMarkers(scopedJournalEntries, journalPresetsById, unit, glucoseHistory)
+            buildJournalChartMarkers(scopedJournalEntries, journalPresetsById, unit, glucoseHistory, journalFoodsById)
         }
     }
     val activeInsulinSummary = remember(journalEnabled, scopedJournalEntries, journalPresetsById, journalNow) {
         if (!journalEnabled || scopedJournalEntries.isEmpty()) {
             null
         } else {
-            buildActiveInsulinSummary(scopedJournalEntries, journalPresetsById, journalNow)
+            JournalIobCalculator.buildActiveInsulinSummary(scopedJournalEntries, journalPresetsById, journalNow)
         }
     }
     val predictionSettings = remember(
@@ -370,7 +389,9 @@ fun DashboardScreen(
         predictionCarbRatioGramsPerUnit,
         predictionInsulinSensitivityMgDlPerUnit,
         predictionCarbAbsorptionGramsPerHour,
-        predictionHorizonMinutes
+        predictionHorizonMinutes,
+        journalEnabled,
+        journalFoodMacrosEnabled
     ) {
         PredictiveSimulationSettings(
             enabled = predictiveSimulationEnabled,
@@ -378,18 +399,19 @@ fun DashboardScreen(
             horizonMinutes = predictionHorizonMinutes,
             carbRatioGramsPerUnit = predictionCarbRatioGramsPerUnit,
             insulinSensitivityMgDlPerUnit = predictionInsulinSensitivityMgDlPerUnit,
-            carbAbsorptionGramsPerHour = predictionCarbAbsorptionGramsPerHour
+            carbAbsorptionGramsPerHour = predictionCarbAbsorptionGramsPerHour,
+            foodMacrosEnabled = journalEnabled && journalFoodMacrosEnabled
         )
     }
     val consumerHistory = remember(
         glucoseHistory,
-        chartSmoothingMinutes,
+        visualSmoothingMinutes,
         dataSmoothingGraphOnly,
         dataSmoothingCollapseChunks
     ) {
         buildSmoothedConsumerHistory(
             points = glucoseHistory,
-            smoothingMinutes = chartSmoothingMinutes,
+            smoothingMinutes = visualSmoothingMinutes,
             smoothOnlyGraph = dataSmoothingGraphOnly,
             collapseChunks = dataSmoothingCollapseChunks
         )
@@ -416,6 +438,37 @@ fun DashboardScreen(
             viewMode = viewMode,
             settings = predictionSettings
         )
+    }
+    // Per-peer prediction series so the simulation extends every drawn line,
+    // not just the primary. Same journal/settings (same person), each peer's
+    // own points + view mode.
+    val peerPredictionSeries = remember(
+        multiSensorDisplay,
+        journalEnabled,
+        predictionSettings,
+        predictionCalibrationRefresh,
+        scopedJournalEntries,
+        journalPresetsById,
+        unit,
+        targetLow,
+        targetHigh
+    ) {
+        if (multiSensorDisplay.isEmpty || !predictionSettings.enabled) {
+            emptyMap()
+        } else {
+            multiSensorDisplay.series.associate { peer ->
+                peer.sensorId to buildPredictionSeriesForChart(
+                    points = peer.points,
+                    journalEntries = if (journalEnabled) scopedJournalEntries else emptyList(),
+                    insulinPresetsById = journalPresetsById,
+                    unit = unit,
+                    targetLow = targetLow,
+                    targetHigh = targetHigh,
+                    viewMode = peer.viewMode,
+                    settings = predictionSettings
+                )
+            }.filterValues { it.isNotEmpty() }
+        }
     }
     val journalEntriesById = remember(scopedJournalEntries) { scopedJournalEntries.associateBy { it.id } }
     val isMmolUnit = remember(unit) { tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit) }
@@ -464,26 +517,48 @@ fun DashboardScreen(
         }
     }
 
-    // Import launcher for CSV files
+    // Import launcher for glucose history. Accepts a JugglucoNG export package
+    // (JSON) — from which ONLY the glucose section is imported — and history CSV
+    // files. Settings/calibrations in a package are intentionally ignored here.
+    fun toast(message: String) {
+        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+    }
     val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             coroutineScope.launch {
-                val result = tk.glucodata.data.HistoryExporter.importFromCsv(context, uri)
-                if (result.success) {
-                    android.widget.Toast.makeText(
-                        context,
-                        context.getString(R.string.imported_readings_count, result.successCount),
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
-                    viewModel.refreshData()
-                } else {
-                    android.widget.Toast.makeText(
-                        context,
-                        context.getString(R.string.import_failed_with_error, result.errorMessage ?: ""),
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
+                when {
+                    tk.glucodata.data.ExportPackageExporter.isExportPackage(context, uri) -> {
+                        tk.glucodata.data.ExportPackageExporter.importHistoryFromPackage(context, uri)
+                            .onSuccess { outcome ->
+                                if (outcome == null || outcome.readings == 0) {
+                                    // Valid package, but it has no glucose (e.g. settings-only export)
+                                    toast(context.getString(R.string.import_no_glucose))
+                                } else {
+                                    toast(context.getString(R.string.imported_readings_count, outcome.readings))
+                                    viewModel.onHistoryImported(outcome.displaySerial)
+                                }
+                            }
+                            .onFailure { throwable ->
+                                toast(context.getString(R.string.import_failed_with_error, throwable.localizedMessage ?: ""))
+                            }
+                    }
+                    tk.glucodata.data.SettingsExporter.isSettingsExport(context, uri) -> {
+                        // A valid JugglucoNG settings export contains no glucose data
+                        toast(context.getString(R.string.import_no_glucose))
+                    }
+                    else -> {
+                        val result = tk.glucodata.data.HistoryExporter.importFromCsv(context, uri)
+                        when {
+                            result.success && result.successCount > 0 -> {
+                                toast(context.getString(R.string.imported_readings_count, result.successCount))
+                                viewModel.onHistoryImported(tk.glucodata.data.HistoryRepository.IMPORTED_SENSOR_SERIAL)
+                            }
+                            result.success -> toast(context.getString(R.string.import_no_glucose))
+                            else -> toast(context.getString(R.string.import_unsupported_file))
+                        }
+                    }
                 }
             }
         }
@@ -493,6 +568,7 @@ fun DashboardScreen(
     if (showSibionicsWizard) {
         tk.glucodata.ui.setup.SibionicsSetupWizard(
             onDismiss = { showSibionicsWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onComplete = {
                 showSibionicsWizard = false
                 viewModel.refreshData()
@@ -505,6 +581,7 @@ fun DashboardScreen(
     if (showLibreWizard) {
         tk.glucodata.ui.setup.LibreSetupWizard(
             onDismiss = { showLibreWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onScanNfc = {
                 showLibreWizard = false
                 tk.glucodata.MainActivity.launchLibreNfcScan()
@@ -517,6 +594,7 @@ fun DashboardScreen(
     if (showDexcomWizard) {
         tk.glucodata.ui.setup.DexcomSetupWizard(
             onDismiss = { showDexcomWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onScanResult = { raw ->
                 tk.glucodata.MainActivity.handleInlineQrScan(raw, tk.glucodata.MainActivity.REQUEST_BARCODE)
                 showDexcomWizard = false
@@ -529,6 +607,7 @@ fun DashboardScreen(
     if (showAccuChekWizard) {
         tk.glucodata.ui.setup.AccuChekSetupWizard(
             onDismiss = { showAccuChekWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onScanResult = { raw ->
                 tk.glucodata.MainActivity.handleInlineQrScan(raw, tk.glucodata.MainActivity.REQUEST_BARCODE)
                 showAccuChekWizard = false
@@ -541,6 +620,7 @@ fun DashboardScreen(
     if (showCareSensAirWizard) {
         tk.glucodata.ui.setup.CareSensAirSetupWizard(
             onDismiss = { showCareSensAirWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onScanResult = { raw ->
                 tk.glucodata.MainActivity.handleInlineQrScan(raw, tk.glucodata.MainActivity.REQUEST_BARCODE)
                 showCareSensAirWizard = false
@@ -553,6 +633,7 @@ fun DashboardScreen(
     if (showAiDexWizard) {
         tk.glucodata.ui.setup.AiDexSetupWizard(
             onDismiss = { showAiDexWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onComplete = {
                 showAiDexWizard = false
                 viewModel.refreshData()
@@ -565,6 +646,7 @@ fun DashboardScreen(
     if (showICanHealthWizard) {
         tk.glucodata.ui.setup.ICanHealthSetupWizard(
             onDismiss = { showICanHealthWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onComplete = {
                 showICanHealthWizard = false
                 viewModel.refreshData()
@@ -577,6 +659,7 @@ fun DashboardScreen(
     if (showMQWizard) {
         tk.glucodata.ui.setup.MQSetupWizard(
             onDismiss = { showMQWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onComplete = {
                 showMQWizard = false
                 viewModel.refreshData()
@@ -589,8 +672,21 @@ fun DashboardScreen(
     if (showAnytimeWizard) {
         tk.glucodata.ui.setup.AnytimeSetupWizard(
             onDismiss = { showAnytimeWizard = false },
+            onNavigateToReadiness = onNavigateToReadiness,
             onComplete = {
                 showAnytimeWizard = false
+                viewModel.refreshData()
+            },
+        )
+        return
+    }
+
+    // Ottai Setup Wizard
+    if (showOttaiWizard) {
+        tk.glucodata.ui.setup.OttaiSetupWizard(
+            onDismiss = { showOttaiWizard = false },
+            onComplete = {
+                showOttaiWizard = false
                 viewModel.refreshData()
             },
         )
@@ -605,11 +701,14 @@ fun DashboardScreen(
             suggestedChartAnchorGlucoseMgDl = request.suggestedChartAnchorGlucoseMgDl,
             suggestedAmountFraction = request.suggestedAmountFraction,
             insulinPresets = if (request.existingEntry != null) journalInsulinPresets else activeJournalPresets,
+            foods = if (journalFoodLibraryEnabled) journalFoods else emptyList(),
+            foodMacrosEnabled = journalFoodMacrosEnabled,
             doseJournalEntries = scopedJournalEntries,
             doseProfile = JournalDoseProfile(
                 enabled = journalEnabled && journalDoseCalculatorEnabled,
                 carbRatioGramsPerUnit = predictionCarbRatioGramsPerUnit,
                 insulinSensitivityMgDlPerUnit = predictionInsulinSensitivityMgDlPerUnit,
+                foodMacrosEnabled = journalFoodMacrosEnabled,
                 targetHighMgDl = if (tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit)) {
                     tk.glucodata.ui.util.GlucoseFormatter.mmolToMg(targetHigh)
                 } else {
@@ -631,6 +730,7 @@ fun DashboardScreen(
                 journalEditorRequest = null
                 clearJournalAction()
             },
+            onSaveFood = viewModel::saveJournalFood,
             onDelete = { entryId ->
                 viewModel.deleteJournalEntry(entryId)
                 journalEditorRequest = null
@@ -753,11 +853,7 @@ fun DashboardScreen(
             val dashboardListTopPadding = 16.dp
             val dashboardItemSpacing = 12.dp
             val readingsTopSpacing = 0.dp
-            val collapsedChartHorizontalPadding = when (adaptiveMetrics.layoutDensity) {
-                AdaptiveLayoutDensity.Compact -> 10.dp
-                AdaptiveLayoutDensity.Regular -> 12.dp
-                AdaptiveLayoutDensity.Comfortable -> 14.dp
-            }
+            val collapsedChartHorizontalPadding = 16.dp
             val defaultVisibleReadingRows = when (adaptiveMetrics.layoutDensity) {
                 AdaptiveLayoutDensity.Compact -> 3.0f
                 AdaptiveLayoutDensity.Regular -> 3.5f
@@ -979,14 +1075,32 @@ fun DashboardScreen(
             val recentReadings = remember(consumerHistory) {
                 buildDisplayReadings(consumerHistory, limit = 10)
             }
+            val recentReadingPeers = remember(recentReadings, multiSensorDisplay) {
+                recentReadings.map { reading -> multiSensorDisplay.peersAt(reading.timestamp) }
+            }
+            val peerSeriesById = remember(multiSensorDisplay) {
+                multiSensorDisplay.series.associateBy { it.sensorId }
+            }
             val recentReadingJournalEntries = remember(recentReadings, scopedJournalEntries) {
                 groupJournalEntriesByReading(recentReadings, scopedJournalEntries)
             }
             val hasVisibleReadingContent = dashboardDataState.isFresh || recentReadings.isNotEmpty()
 
-            val isManualCalibrationEnabled = if (viewMode == 1 || viewMode == 3) isRawEnabled else isAutoEnabled
             val triggerCalibrationIfEnabled: (CalibrationSheetState) -> Unit = { state ->
-                if (isManualCalibrationEnabled) {
+                val targetSensorId = when (state) {
+                    is CalibrationSheetState.New -> state.sensorId
+                    is CalibrationSheetState.Edit -> state.entity.sensorId
+                    CalibrationSheetState.Hidden -> ""
+                }
+                val targetRawMode = when (state) {
+                    is CalibrationSheetState.New -> {
+                        val targetMode = state.viewModeOverride ?: viewMode
+                        targetMode == 1 || targetMode == 3
+                    }
+                    is CalibrationSheetState.Edit -> state.entity.isRawMode
+                    CalibrationSheetState.Hidden -> false
+                }
+                if (tk.glucodata.data.calibration.CalibrationManager.isEnabledForMode(targetRawMode, targetSensorId)) {
                     onTriggerCalibration(state)
                 }
             }
@@ -999,8 +1113,7 @@ fun DashboardScreen(
                 viewMode,
                 calibrationSensorId,
                 predictionCalibrationRefresh,
-                isRawEnabled,
-                isAutoEnabled
+                calibrationRevision
             ) {
                 if (latestPoint != null &&
                     !tk.glucodata.data.calibration.CalibrationManager.shouldOverwriteSensorValues() &&
@@ -1038,13 +1151,17 @@ fun DashboardScreen(
                     tk.glucodata.ui.components.SensorType.ICANHEALTH -> showICanHealthWizard = true
                     tk.glucodata.ui.components.SensorType.MQ -> showMQWizard = true
                     tk.glucodata.ui.components.SensorType.ANYTIME -> showAnytimeWizard = true
+                    tk.glucodata.ui.components.SensorType.OTTAI -> showOttaiWizard = true
                 }
             },
                 onImportHistory = {
-                    importLauncher.launch(arrayOf("text/csv", "text/comma-separated-values", "*/*"))
+                    importLauncher.launch(arrayOf("application/json", "text/csv", "text/comma-separated-values", "*/*"))
                 },
                 modifier = Modifier
-                    .padding(padding)
+                    .padding(padding),
+                readinessContent = {
+                    DashboardCgmReadinessBanner(onOpenReadiness = onNavigateToReadiness)
+                }
             )
             } else if (isLandscape) {
             // LANDSCAPE: SPLIT VIEW
@@ -1078,11 +1195,26 @@ fun DashboardScreen(
                             calibratedValue = calibratedValue,
                             currentSnapshot = dashboardCurrentSnapshot,
                             dataState = dashboardDataState,
+                            peerReadings = peerCurrentReadings,
+                            onPeerReadingClick = { viewModel.promoteSensorToPrimary(it) },
                             isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit),
+                            targetLow = targetLow,
+                            targetHigh = targetHigh,
+                            veryLowThreshold = veryLowThreshold,
+                            veryHighThreshold = veryHighThreshold,
+                            valueRangeColorsEnabled = glucoseRangeColorsDisplayEnabled,
+                            arrowForecastColorsEnabled = glucoseArrowForecastEnabled,
                             onHeroClick = {
                                 val autoVal = latestPoint?.value ?: tk.glucodata.GlucoseValueParser.parseFirstOrZero(currentGlucose)
                                 val rawVal = latestPoint?.rawValue ?: autoVal
-                                triggerCalibrationIfEnabled(CalibrationSheetState.New(autoVal, rawVal, System.currentTimeMillis()))
+                                triggerCalibrationIfEnabled(
+                                    CalibrationSheetState.New(
+                                        autoVal,
+                                        rawVal,
+                                        latestPoint?.timestamp ?: System.currentTimeMillis(),
+                                        latestPoint?.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                                    )
+                                )
                             }
                         )
                     }
@@ -1106,6 +1238,9 @@ fun DashboardScreen(
                                 index = index,
                                 totalCount = recentReadings.size,
                                 history = recentReadings,
+                                peerReadings = recentReadingPeers.getOrNull(index).orEmpty(),
+                                peerSeries = peerSeriesById,
+                                multiSensorActive = multiSensorActive,
                                 sensorId = sensorName,
                                 calibrations = calibrations,
                                 journalEntries = recentReadingJournalEntries[item.timestamp].orEmpty(),
@@ -1140,7 +1275,28 @@ fun DashboardScreen(
                                 onValueClick = {
                                     clearJournalAction()
                                     triggerCalibrationIfEnabled(
-                                        CalibrationSheetState.New(item.value, item.rawValue, item.timestamp)
+                                        CalibrationSheetState.New(
+                                            item.value,
+                                            item.rawValue,
+                                            item.timestamp,
+                                            item.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                                        )
+                                    )
+                                },
+                                onSensorValueClick = { reading ->
+                                    clearJournalAction()
+                                    val readingSensorId = reading.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                                    val readingViewMode = sensorViewModes.entries.firstOrNull { (sensorId, _) ->
+                                        SensorIdentity.matches(sensorId, readingSensorId)
+                                    }?.value ?: viewMode
+                                    triggerCalibrationIfEnabled(
+                                        CalibrationSheetState.New(
+                                            auto = reading.value,
+                                            raw = reading.rawValue,
+                                            timestamp = reading.timestamp,
+                                            sensorId = readingSensorId,
+                                            viewModeOverride = readingViewMode
+                                        )
                                     )
                                 },
                                 onDeleteReading = { point ->
@@ -1164,10 +1320,14 @@ fun DashboardScreen(
                                 DashboardChartSection(
                                     modifier = Modifier.fillMaxSize(),
                                     glucoseHistory = glucoseHistory,
+                                    multiSensorDisplay = multiSensorDisplay,
+                                    peerPredictionSeries = peerPredictionSeries,
                                     journalMarkers = journalChartMarkers,
                                     activeInsulinSummary = activeInsulinSummary,
+                                    showEiob = journalEiobDisplayEnabled,
+                                    appChartRangeColors = appChartRangeColorsEnabled,
                                     predictionSeries = predictionSeries,
-                                    graphSmoothingMinutes = chartSmoothingMinutes,
+                                    graphSmoothingMinutes = visualSmoothingMinutes,
                                     collapseSmoothedData = dataSmoothingCollapseChunks,
                                     previewWindowMode = previewWindowMode,
                                     graphLow = graphLow,
@@ -1175,6 +1335,8 @@ fun DashboardScreen(
                                     targetLow = targetLow,
                                     targetHigh = targetHigh,
                                     unit = unit,
+                                    veryLowThreshold = veryLowThreshold,
+                                    veryHighThreshold = veryHighThreshold,
                                     calibrations = calibrations,
                                     viewMode = viewMode,
                                     onTimeRangeSelected = { timeRange = it },
@@ -1185,7 +1347,14 @@ fun DashboardScreen(
                                     onToggleExpanded = null,
                                     onPointClick = { point ->
                                         clearJournalAction()
-                                        triggerCalibrationIfEnabled(CalibrationSheetState.New(point.value, point.rawValue, point.timestamp))
+                                        triggerCalibrationIfEnabled(
+                                            CalibrationSheetState.New(
+                                                point.value,
+                                                point.rawValue,
+                                                point.timestamp,
+                                                point.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                                            )
+                                        )
                                     },
                                     onCalibrationClick = { cal ->
                                         clearJournalAction()
@@ -1210,7 +1379,7 @@ fun DashboardScreen(
                                 )
                             }
                             journalActionTimestamp?.let { actionTimestamp ->
-                                DashboardJournalFloatingMenu(
+                                JournalFloatingActionMenu(
                                     visible = journalEnabled,
                                     selectedTimestamp = actionTimestamp,
                                     viewportSnapshot = dashboardChartViewport,
@@ -1265,11 +1434,26 @@ fun DashboardScreen(
                             calibratedValue = calibratedValue,
                             currentSnapshot = dashboardCurrentSnapshot,
                             dataState = dashboardDataState,
+                            peerReadings = peerCurrentReadings,
+                            onPeerReadingClick = { viewModel.promoteSensorToPrimary(it) },
                             isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit),
+                            targetLow = targetLow,
+                            targetHigh = targetHigh,
+                            veryLowThreshold = veryLowThreshold,
+                            veryHighThreshold = veryHighThreshold,
+                            valueRangeColorsEnabled = glucoseRangeColorsDisplayEnabled,
+                            arrowForecastColorsEnabled = glucoseArrowForecastEnabled,
                             onHeroClick = {
                                 val autoVal = latestPoint?.value ?: tk.glucodata.GlucoseValueParser.parseFirstOrZero(currentGlucose)
                                 val rawVal = latestPoint?.rawValue ?: autoVal
-                                triggerCalibrationIfEnabled(CalibrationSheetState.New(autoVal, rawVal, System.currentTimeMillis()))
+                                triggerCalibrationIfEnabled(
+                                    CalibrationSheetState.New(
+                                        autoVal,
+                                        rawVal,
+                                        latestPoint?.timestamp ?: System.currentTimeMillis(),
+                                        latestPoint?.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                                    )
+                                )
                             }
                         )
                     }
@@ -1319,10 +1503,14 @@ fun DashboardScreen(
                                         .fillMaxSize()
                                         .padding(bottom = 0.dp),
                                     glucoseHistory = glucoseHistory,
+                                    multiSensorDisplay = multiSensorDisplay,
+                                    peerPredictionSeries = peerPredictionSeries,
                                     journalMarkers = journalChartMarkers,
                                     activeInsulinSummary = activeInsulinSummary,
+                                    showEiob = journalEiobDisplayEnabled,
+                                    appChartRangeColors = appChartRangeColorsEnabled,
                                     predictionSeries = predictionSeries,
-                                    graphSmoothingMinutes = chartSmoothingMinutes,
+                                    graphSmoothingMinutes = visualSmoothingMinutes,
                                     collapseSmoothedData = dataSmoothingCollapseChunks,
                                     previewWindowMode = previewWindowMode,
                                     graphLow = graphLow,
@@ -1330,6 +1518,8 @@ fun DashboardScreen(
                                     targetLow = targetLow,
                                     targetHigh = targetHigh,
                                     unit = unit,
+                                    veryLowThreshold = veryLowThreshold,
+                                    veryHighThreshold = veryHighThreshold,
                                     calibrations = calibrations,
                                     viewMode = viewMode,
                                     onTimeRangeSelected = { timeRange = it },
@@ -1341,7 +1531,14 @@ fun DashboardScreen(
                                     chartBoostProgress = chartBoostProgress,
                                     onPointClick = { point ->
                                         clearJournalAction()
-                                        triggerCalibrationIfEnabled(CalibrationSheetState.New(point.value, point.rawValue, point.timestamp))
+                                        triggerCalibrationIfEnabled(
+                                            CalibrationSheetState.New(
+                                                point.value,
+                                                point.rawValue,
+                                                point.timestamp,
+                                                point.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                                            )
+                                        )
                                     },
                                     onCalibrationClick = { cal ->
                                         clearJournalAction()
@@ -1366,7 +1563,7 @@ fun DashboardScreen(
                                 )
                             }
                             journalActionTimestamp?.let { actionTimestamp ->
-                                DashboardJournalFloatingMenu(
+                                JournalFloatingActionMenu(
                                     visible = journalEnabled,
                                     selectedTimestamp = actionTimestamp,
                                     viewportSnapshot = dashboardChartViewport,
@@ -1409,6 +1606,9 @@ fun DashboardScreen(
                                 index = index,
                                 totalCount = recentReadings.size,
                                 history = recentReadings,
+                                peerReadings = recentReadingPeers.getOrNull(index).orEmpty(),
+                                peerSeries = peerSeriesById,
+                                multiSensorActive = multiSensorActive,
                                 sensorId = sensorName,
                                 calibrations = calibrations,
                                 journalEntries = recentReadingJournalEntries[item.timestamp].orEmpty(),
@@ -1443,7 +1643,28 @@ fun DashboardScreen(
                                 onValueClick = {
                                     clearJournalAction()
                                     triggerCalibrationIfEnabled(
-                                        CalibrationSheetState.New(item.value, item.rawValue, item.timestamp)
+                                        CalibrationSheetState.New(
+                                            item.value,
+                                            item.rawValue,
+                                            item.timestamp,
+                                            item.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                                        )
+                                    )
+                                },
+                                onSensorValueClick = { reading ->
+                                    clearJournalAction()
+                                    val readingSensorId = reading.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                                    val readingViewMode = sensorViewModes.entries.firstOrNull { (sensorId, _) ->
+                                        SensorIdentity.matches(sensorId, readingSensorId)
+                                    }?.value ?: viewMode
+                                    triggerCalibrationIfEnabled(
+                                        CalibrationSheetState.New(
+                                            auto = reading.value,
+                                            raw = reading.rawValue,
+                                            timestamp = reading.timestamp,
+                                            sensorId = readingSensorId,
+                                            viewModeOverride = readingViewMode
+                                        )
                                     )
                                 },
                                 onDeleteReading = { point ->
@@ -1469,11 +1690,19 @@ fun DashboardScreen(
                         CalibrationsCard(
                             viewMode = viewMode,
                             isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit),
+                            sensorId = sensorName,
                             showEmptyAction = hasVisibleReadingContent,
                             onAddCalibration = {
                                 val autoVal = latestPoint?.value ?: tk.glucodata.GlucoseValueParser.parseFirstOrZero(currentGlucose)
                                 val rawVal = latestPoint?.rawValue ?: autoVal
-                                triggerCalibrationIfEnabled(CalibrationSheetState.New(autoVal, rawVal, System.currentTimeMillis()))
+                                triggerCalibrationIfEnabled(
+                                    CalibrationSheetState.New(
+                                        autoVal,
+                                        rawVal,
+                                        latestPoint?.timestamp ?: System.currentTimeMillis(),
+                                        latestPoint?.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                                    )
+                                )
                             },
                             onEditCalibration = { cal ->
                                 triggerCalibrationIfEnabled(CalibrationSheetState.Edit(cal))
@@ -1488,200 +1717,4 @@ fun DashboardScreen(
         }
     }
 
-}
-
-
-@Composable
-private fun DashboardJournalFloatingMenu(
-    visible: Boolean,
-    selectedTimestamp: Long,
-    viewportSnapshot: ChartViewportSnapshot?,
-    onTypeSelected: (JournalEntryType) -> Unit
-) {
-    val view = LocalView.current
-    val actionTypes = remember {
-        listOf(
-            JournalEntryType.INSULIN,
-            JournalEntryType.CARBS,
-            JournalEntryType.FINGERSTICK,
-            JournalEntryType.ACTIVITY,
-            JournalEntryType.NOTE
-        )
-    }
-    val anchorFraction = remember(selectedTimestamp, viewportSnapshot) {
-        viewportSnapshot
-            ?.takeIf { it.endMillis > it.startMillis }
-            ?.let { snapshot ->
-                ((selectedTimestamp - snapshot.startMillis).toFloat() /
-                    (snapshot.endMillis - snapshot.startMillis).toFloat()).coerceIn(0f, 1f)
-            }
-    }
-    val menuReveal = remember { Animatable(0f) }
-    LaunchedEffect(visible, selectedTimestamp, anchorFraction) {
-        if (visible && anchorFraction != null) {
-            menuReveal.snapTo(0f)
-            menuReveal.animateTo(
-                targetValue = 1f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioLowBouncy,
-                    stiffness = Spring.StiffnessLow
-                )
-            )
-        } else {
-            menuReveal.animateTo(
-                targetValue = 0f,
-                animationSpec = tween(durationMillis = 120)
-            )
-        }
-    }
-    val menuProgress = menuReveal.value
-    val menuScale = 0.82f + (0.18f * menuProgress)
-
-    if (anchorFraction != null && (visible || menuProgress > 0.01f)) {
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    alpha = menuProgress.coerceIn(0f, 1f)
-                }
-        ) {
-            val density = LocalDensity.current
-            val resolvedAnchorFraction = anchorFraction ?: return@BoxWithConstraints
-            val containerWidthPx = with(density) { maxWidth.toPx() }
-            val containerHeightPx = with(density) { maxHeight.toPx() }
-            val menuWidthPx = with(density) { 176.dp.toPx() }
-            val edgePaddingPx = with(density) { 12.dp.toPx() }
-            val anchorGapPx = with(density) { 14.dp.toPx() }
-            val menuTopPx = with(density) { 86.dp.toPx() }
-            val rowTravelPx = with(density) { 18.dp.toPx() }
-            val itemLiftPx = with(density) { 16.dp.toPx() }
-            val anchorX = containerWidthPx * resolvedAnchorFraction
-            val placeMenuLeft = resolvedAnchorFraction > 0.56f
-            val desiredX = if (placeMenuLeft) {
-                anchorX - menuWidthPx - anchorGapPx
-            } else {
-                anchorX + anchorGapPx
-            }
-            val clampedX = desiredX.coerceIn(
-                edgePaddingPx,
-                (containerWidthPx - menuWidthPx - edgePaddingPx).coerceAtLeast(edgePaddingPx)
-            )
-            val clampedY = menuTopPx.coerceIn(
-                edgePaddingPx,
-                (containerHeightPx - with(density) { 248.dp.toPx() }).coerceAtLeast(edgePaddingPx)
-            )
-
-            Column(
-                modifier = Modifier
-                    .offset {
-                        androidx.compose.ui.unit.IntOffset(
-                            x = clampedX.roundToInt(),
-                            y = clampedY.roundToInt()
-                        )
-                    }
-                    .graphicsLayer {
-                        alpha = menuProgress
-                        scaleX = menuScale
-                        scaleY = menuScale
-                        translationY = (12.dp.toPx() * (1f - menuProgress))
-                    }
-                    .width(176.dp),
-                horizontalAlignment = if (placeMenuLeft) Alignment.End else Alignment.Start,
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                actionTypes.forEachIndexed { index, actionType ->
-                    val itemProgress = ((menuProgress - (index * 0.08f)) / 0.92f).coerceIn(0f, 1f)
-                    val label = stringResource(actionType.dashboardLabelRes())
-                    val actionTint = journalTypeColor(actionType)
-                    val iconContainerColor = journalTypeSelectedContainerColor(actionType)
-                    val labelContainerColor = journalTypeSubtleContainerColor(actionType)
-                    Row(
-                        modifier = Modifier
-                            .wrapContentWidth(if (placeMenuLeft) Alignment.End else Alignment.Start)
-                            .graphicsLayer {
-                                alpha = itemProgress
-                                translationX = (if (placeMenuLeft) rowTravelPx else -rowTravelPx) * (1f - itemProgress)
-                                translationY = itemLiftPx * (1f - itemProgress)
-                                scaleX = 0.78f + (0.22f * itemProgress)
-                                scaleY = 0.78f + (0.22f * itemProgress)
-                                rotationZ = (if (placeMenuLeft) -7f else 7f) * (1f - itemProgress)
-                            },
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (!placeMenuLeft) {
-                            SmallFloatingActionButton(
-                                onClick = {
-                                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                                    onTypeSelected(actionType)
-                                },
-                                shape = CircleShape,
-                                containerColor = iconContainerColor,
-                                contentColor = actionTint,
-                                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 0.dp)
-                            ) {
-                                Icon(
-                                    imageVector = actionType.dashboardIcon(),
-                                    contentDescription = label,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-
-                        Surface(
-                            modifier = Modifier.clickable {
-                                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                                onTypeSelected(actionType)
-                            },
-                            shape = RoundedCornerShape(18.dp),
-                            color = labelContainerColor,
-                            tonalElevation = 0.dp,
-                            shadowElevation = 0.dp
-                        ) {
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelLarge,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                            )
-                        }
-
-                        if (placeMenuLeft) {
-                            SmallFloatingActionButton(
-                                onClick = {
-                                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                                    onTypeSelected(actionType)
-                                },
-                                shape = CircleShape,
-                                containerColor = iconContainerColor,
-                                contentColor = actionTint,
-                                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 0.dp)
-                            ) {
-                                Icon(
-                                    imageVector = actionType.dashboardIcon(),
-                                    contentDescription = label,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun JournalEntryType.dashboardLabelRes(): Int = when (this) {
-    JournalEntryType.INSULIN -> R.string.journal_type_insulin
-    JournalEntryType.CARBS -> R.string.carbo
-    JournalEntryType.FINGERSTICK -> R.string.journal_type_bg_short
-    JournalEntryType.ACTIVITY -> R.string.journal_type_activity
-    JournalEntryType.NOTE -> R.string.journal_type_note
-}
-
-private fun JournalEntryType.dashboardIcon(): ImageVector = when (this) {
-    JournalEntryType.INSULIN -> Icons.Default.Vaccines
-    JournalEntryType.CARBS -> Icons.Default.Restaurant
-    JournalEntryType.FINGERSTICK -> Icons.Default.Bloodtype
-    JournalEntryType.ACTIVITY -> Icons.Default.DirectionsRun
-    JournalEntryType.NOTE -> Icons.Filled.Label
 }

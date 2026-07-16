@@ -32,12 +32,14 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string>
 #include <sys/prctl.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 extern "C" {
 typedef void (*sighandler_t)(int);
 
@@ -626,6 +628,7 @@ static SensorGlucoseData *ensureDirectStreamShellForId(const char *sensorId,
                                                        uint32_t startTimeSec);
 static void seedDirectStreamStateIfMissing(SensorGlucoseData *hist,
                                            time_t timestamp);
+static void syncListStarttime(SensorGlucoseData *hist, uint32_t start);
 static bool isManagedDirectStreamSensorId(JNIEnv *env, const char *sensorId);
 extern "C" JNIEXPORT jlong JNICALL fromjava(getdataptr)(JNIEnv *env, jclass cl,
                                                         jstring jsensor) {
@@ -1241,6 +1244,7 @@ extern "C" JNIEXPORT void JNICALL fromjava(addGlucoseInjection)(
         if (!start && timestamp > 3600) {
           start = timestamp - 3600;
           info->starttime = start;
+          syncListStarttime(hist, start);
         }
 
         int lifeCount = 0;
@@ -1340,8 +1344,22 @@ static void seedDirectStreamStateIfMissing(SensorGlucoseData *hist,
   }
 }
 
+static void syncListStarttime(SensorGlucoseData *hist, uint32_t start) {
+  if (!hist || !sensors || !Sensoren::validSensorStarttime(start))
+    return;
+  sensors->setSensorStarttime(hist->sensorIndex, start);
+}
+
+static int compactRawMgdl(jfloat rawGlucose) {
+  if (rawGlucose <= 0.0f)
+    return 0;
+  constexpr float mgdlToMmol = 1.0f / 18.0182f;
+  return (int)roundf(rawGlucose * mgdlToMmol * 10.0f);
+}
+
 static void addGlucoseStreamInternal(JNIEnv *env, jlong timestamp, jfloat glucose,
-                                     jfloat temperatureC, jstring sensorId,
+                                     jfloat rawGlucose, jfloat temperatureC,
+                                     jstring sensorId, bool overwriteRaw,
                                      bool overwriteTemp) {
   if (!sensors || !sensorId)
     return;
@@ -1366,6 +1384,7 @@ static void addGlucoseStreamInternal(JNIEnv *env, jlong timestamp, jfloat glucos
       if (!start && timestamp > 3600) {
         start = timestamp - 3600;
         info->starttime = start;
+        syncListStarttime(hist, start);
       }
 
       int lifeCount = 0;
@@ -1388,6 +1407,9 @@ static void addGlucoseStreamInternal(JNIEnv *env, jlong timestamp, jfloat glucos
           }
           preservedTemp = hist->getTempForPoll(lifeCount);
         }
+        if (overwriteRaw && rawGlucose > 0.0f) {
+          preservedRaw = compactRawMgdl(rawGlucose);
+        }
         if (overwriteTemp && temperatureC > 0.0f) {
           preservedTemp = static_cast<uint16_t>(temperatureC * 10.0f);
         }
@@ -1409,14 +1431,22 @@ static void addGlucoseStreamInternal(JNIEnv *env, jlong timestamp, jfloat glucos
 
 extern "C" JNIEXPORT void JNICALL fromjava(addGlucoseStream)(
     JNIEnv *env, jclass cl, jlong timestamp, jfloat glucose, jstring sensorId) {
-  addGlucoseStreamInternal(env, timestamp, glucose, 0.0f, sensorId, false);
+  addGlucoseStreamInternal(env, timestamp, glucose, 0.0f, 0.0f, sensorId, false,
+                           false);
 }
 
 extern "C" JNIEXPORT void JNICALL fromjava(addGlucoseStreamWithTemp)(
     JNIEnv *env, jclass cl, jlong timestamp, jfloat glucose, jfloat temperatureC,
     jstring sensorId) {
-  addGlucoseStreamInternal(env, timestamp, glucose, temperatureC, sensorId,
-                           true);
+  addGlucoseStreamInternal(env, timestamp, glucose, 0.0f, temperatureC,
+                           sensorId, false, true);
+}
+
+extern "C" JNIEXPORT void JNICALL fromjava(addGlucoseStreamWithRawTemp)(
+    JNIEnv *env, jclass cl, jlong timestamp, jfloat glucose, jfloat rawGlucose,
+    jfloat temperatureC, jstring sensorId) {
+  addGlucoseStreamInternal(env, timestamp, glucose, rawGlucose, temperatureC,
+                           sensorId, true, true);
 }
 
 extern "C" JNIEXPORT jlong JNICALL fromjava(ensureSensorShell)(
@@ -1450,6 +1480,7 @@ extern "C" JNIEXPORT jlong JNICALL fromjava(ensureSensorShell)(
         (info->starttime == 0 ||
          static_cast<uint32_t>(startTimeSec) < info->starttime)) {
       info->starttime = static_cast<uint32_t>(startTimeSec);
+      syncListStarttime(hist, static_cast<uint32_t>(startTimeSec));
     }
   }
 
@@ -1502,6 +1533,7 @@ fromjava(addRawGlucoseStream)(JNIEnv *env, jclass cl, jlong timestamp,
       if (!start && timestamp > 3600) {
         start = timestamp - 3600;
         info->starttime = start;
+        syncListStarttime(hist, start);
       }
 
       int lifeCount = 0;
@@ -1516,8 +1548,7 @@ fromjava(addRawGlucoseStream)(JNIEnv *env, jclass cl, jlong timestamp,
         uint16_t preservedTemp = hist->getTempForPoll(lifeCount);
         int rawVal = 0;
         if (rawGlucose > 0) {
-          constexpr float mgdlToMmol = 1.0f / 18.0182f;
-          rawVal = (int)roundf(rawGlucose * mgdlToMmol * 10.0f);
+          rawVal = compactRawMgdl(rawGlucose);
         } else {
           const RawData *rawbuf = hist->getRawPollsData();
           if (rawbuf) {
@@ -1562,6 +1593,39 @@ static void appendScanFallbackHistory(const SensorGlucoseData *hist,
   }
 }
 
+static bool rawOnlyPollValid(const ScanData &item, uint16_t rawVal,
+                             jlong starttime) {
+  return rawVal > 0 && item.t > starttime && item.id >= 0 &&
+         item.t > 1598911200u && item.t < 2145909600u;
+}
+
+static void appendPollHistory(const SensorGlucoseData *hist, jlong starttime,
+                              std::vector<jlong> &result) {
+  auto polls = hist->getPolldata();
+  static const double convfactordL = 18.0182;
+
+  for (const auto &item : polls) {
+    const uint16_t rawVal = hist->getRawForPoll(&item);
+    const bool autoValid = item.valid();
+    if ((!autoValid || item.t <= starttime) &&
+        !rawOnlyPollValid(item, rawVal, starttime)) {
+      continue;
+    }
+
+    jlong valAuto = 0;
+    if (autoValid) {
+      double cali = calibrateNow(hist, item);
+      valAuto = !isnan(cali) ? (jlong)(cali * 10) : (jlong)item.g * 10;
+    }
+
+    const jlong valRaw = rawVal > 0 ? (jlong)(rawVal * convfactordL) : 0;
+
+    result.push_back((jlong)item.t);
+    result.push_back(valAuto);
+    result.push_back(valRaw);
+  }
+}
+
 extern "C" JNIEXPORT jlongArray JNICALL
 fromjava(getGlucoseHistory)(JNIEnv *env, jclass cl, jlong starttime) {
   // Use the user-selected main sensor instead of getlaststream() which picks
@@ -1577,35 +1641,7 @@ fromjava(getGlucoseHistory)(JNIEnv *env, jclass cl, jlong starttime) {
   std::vector<jlong> result;
   result.reserve(900);
 
-  auto polls = hist->getPolldata();
-  static const double convfactordL = 18.0182;
-
-  for (const auto &item : polls) {
-    if (item.valid() && item.t > starttime) {
-      double cali = calibrateNow(hist, item);
-      jlong valAuto;
-      jlong valRaw;
-
-      // Auto Value
-      if (!isnan(cali)) {
-        valAuto = (jlong)(cali * 10);
-      } else {
-        valAuto = (jlong)item.g * 10;
-      }
-
-      // Raw Value
-      // Raw is stored in separate array 'rawpolls'
-      uint16_t rawVal = hist->getRawForPoll(&item);
-      // rawVal is 'current' (value*10 from eu.cpp)
-      // valRaw (mg/dL * 10) = (current / 10.0) * 18.0182 * 10 = current
-      // * 18.0182
-      valRaw = (jlong)(rawVal * convfactordL);
-
-      result.push_back((jlong)item.t);
-      result.push_back(valAuto);
-      result.push_back(valRaw);
-    }
-  }
+  appendPollHistory(hist, starttime, result);
 
   if (result.empty()) {
     appendScanFallbackHistory(hist, starttime, result);
@@ -1649,29 +1685,7 @@ extern "C" JNIEXPORT jlongArray JNICALL fromjava(getGlucoseHistoryForSensor)(
   std::vector<jlong> result;
   result.reserve(900);
 
-  auto polls = hist->getPolldata();
-  static const double convfactordL = 18.0182;
-
-  for (const auto &item : polls) {
-    if (item.valid() && item.t > starttime) {
-      double cali = calibrateNow(hist, item);
-      jlong valAuto;
-      jlong valRaw;
-
-      if (!isnan(cali)) {
-        valAuto = (jlong)(cali * 10);
-      } else {
-        valAuto = (jlong)item.g * 10;
-      }
-
-      uint16_t rawVal = hist->getRawForPoll(&item);
-      valRaw = (jlong)(rawVal * convfactordL);
-
-      result.push_back((jlong)item.t);
-      result.push_back(valAuto);
-      result.push_back(valRaw);
-    }
-  }
+  appendPollHistory(hist, starttime, result);
 
   if (result.empty()) {
     appendScanFallbackHistory(hist, starttime, result);
@@ -1834,6 +1848,22 @@ fromjava(getSensorEndTimeFromSensorptr)(JNIEnv *env, jclass cl, jlong sensorptr,
 
 extern std::vector<int> usedsensors;
 extern void setusedsensors();
+extern std::vector<int> usedsensorssnapshot();
+extern jclass JNIString;
+
+static jobjectArray sensorNamesToJavaArray(JNIEnv *env,
+                                           const std::vector<std::string> &names) {
+  jobjectArray sensjar = env->NewObjectArray(names.size(), JNIString, nullptr);
+  for (int i = 0; i < static_cast<int>(names.size()); i++) {
+    jstring name = env->NewStringUTF(names[i].c_str());
+    if (name) {
+      env->SetObjectArrayElement(sensjar, i, name);
+      env->DeleteLocalRef(name);
+    }
+  }
+  return sensjar;
+}
+
 /*
 extern "C" JNIEXPORT jboolean  JNICALL   fromjava(hasSibionics)(JNIEnv *env,
 jclass cl) { setusedsensors(); const int len= usedsensors.size(); for(int
@@ -1845,10 +1875,8 @@ i=0;i<len;i++) { const int index=usedsensors[i]; if(sensors->isSibionics(index))
 extern bool hasGlucoseMeters();
 extern "C" JNIEXPORT jboolean JNICALL fromjava(hasNeedScan)(JNIEnv *env,
                                                             jclass cl) {
-  setusedsensors();
-  const int len = usedsensors.size();
-  for (int i = 0; i < len; i++) {
-    const int index = usedsensors[i];
+  const auto active = usedsensorssnapshot();
+  for (const int index : active) {
     if (sensors->needsScan(index))
       return true;
   }
@@ -1857,17 +1885,18 @@ extern "C" JNIEXPORT jboolean JNICALL fromjava(hasNeedScan)(JNIEnv *env,
 #ifndef WEAROS
 extern "C" JNIEXPORT jlongArray JNICALL fromjava(activeSensorPtrs)(JNIEnv *env,
                                                                    jclass cl) {
-  setusedsensors();
-  const int len = usedsensors.size();
-  jlong longar[len];
+  const auto active = usedsensorssnapshot();
+  const int len = active.size();
+  std::vector<jlong> longar(len);
   LOGGER("activeSensorPtrs  len=%d\n", len);
   for (int i = 0; i < len; i++) {
-    int index = usedsensors[i];
+    int index = active[i];
     const SensorGlucoseData *sens = sensors->getSensorData(index);
     longar[i] = reinterpret_cast<jlong>(sens);
   }
   jlongArray ptrAr = env->NewLongArray(len);
-  env->SetLongArrayRegion(ptrAr, 0, len, longar);
+  if (len > 0)
+    env->SetLongArrayRegion(ptrAr, 0, len, longar.data());
   return ptrAr;
 }
 
@@ -1902,40 +1931,32 @@ fromjava(finishfromSensorptr)(JNIEnv *env, jclass cl, jlong sensorptr) {
   finishsensor(sens, sensorindex);
 }
 #endif
-extern jclass JNIString;
 #ifdef LIBRE3
 extern "C" JNIEXPORT jobjectArray JNICALL fromjava(activeSensors)(JNIEnv *env,
                                                                   jclass cl) {
-  setusedsensors();
-  const int len = usedsensors.size();
-  jobjectArray sensjar = env->NewObjectArray(len, JNIString, nullptr);
-
-  for (int i = 0; i < len; i++) {
-    int index = usedsensors[i];
+  const auto active = usedsensorssnapshot();
+  std::vector<std::string> names;
+  names.reserve(active.size());
+  for (const int index : active) {
     const char *name = sensors->shortsensorname_chars(index);
-    env->SetObjectArrayElement(sensjar, i, env->NewStringUTF(name));
+    if (name)
+      names.emplace_back(name);
   }
-
-  return sensjar;
+  return sensorNamesToJavaArray(env, names);
 }
 #else
 extern "C" JNIEXPORT jobjectArray JNICALL fromjava(activeSensors)(JNIEnv *env,
                                                                   jclass cl) {
-  setusedsensors();
-  const int len = usedsensors.size();
-  const char *names[len];
-  int uitlen = 0;
-  for (int i = 0; i < len; i++) {
-    int index = usedsensors[i];
+  const auto active = usedsensorssnapshot();
+  std::vector<std::string> names;
+  names.reserve(active.size());
+  for (const int index : active) {
     const SensorGlucoseData *sens = sensors->getSensorData(index);
-    if (sens && !sens->isLibre3())
-      names[uitlen++] = sensors->shortsensorname_chars(index);
+    const char *name = sensors->shortsensorname_chars(index);
+    if (sens && !sens->isLibre3() && name)
+      names.emplace_back(name);
   }
-  jobjectArray sensjar = env->NewObjectArray(uitlen, JNIString, nullptr);
-  for (int i = 0; i < uitlen; i++)
-    env->SetObjectArrayElement(sensjar, i, env->NewStringUTF(names[i]));
-
-  return sensjar;
+  return sensorNamesToJavaArray(env, names);
 }
 #endif
 

@@ -12,6 +12,7 @@ class JournalRepository {
     private companion object {
         const val PREFS_NAME = "tk.glucodata_preferences"
         const val DEFAULT_PRESETS_SEEDED_KEY = "journal_default_presets_seeded_v4"
+        const val DEFAULT_FOODS_SEEDED_KEY = "journal_default_foods_seeded_v2"
     }
 
     private val database = HistoryDatabase.getInstance(Applic.app)
@@ -24,6 +25,10 @@ class JournalRepository {
 
     fun observeInsulinPresets(): Flow<List<JournalInsulinPreset>> {
         return dao.observeInsulinPresets().map { presets -> presets.map(JournalInsulinPresetEntity::toModel) }
+    }
+
+    fun observeFoods(): Flow<List<JournalFood>> {
+        return dao.observeFoods().map { foods -> foods.map(JournalFoodEntity::toModel) }
     }
 
     suspend fun ensureDefaultInsulinPresets() {
@@ -40,7 +45,9 @@ class JournalRepository {
     }
 
     suspend fun upsertEntry(input: JournalEntryInput): Long {
+        val sourceRecordId = input.sourceRecordId?.takeIf { it.isNotBlank() }
         val existing = input.id?.let { dao.getEntryById(it) }
+            ?: sourceRecordId?.let { dao.getEntryBySourceRecordId(it) }
         val now = System.currentTimeMillis()
         val entity = JournalEntryEntity(
             id = existing?.id ?: (input.id ?: 0L),
@@ -55,19 +62,32 @@ class JournalRepository {
             intensity = input.intensity?.storageValue,
             insulinPresetId = input.insulinPresetId,
             source = input.source.storageValue,
-            sourceRecordId = input.sourceRecordId?.takeIf { it.isNotBlank() },
+            sourceRecordId = sourceRecordId,
             createdAt = existing?.createdAt ?: now,
             updatedAt = now,
+            foodId = input.foodId,
+            proteinGrams = input.proteinGrams?.coerceAtLeast(0f),
+            fatGrams = input.fatGrams?.coerceAtLeast(0f),
             nsUploadedAt = existing?.nsUploadedAt,
-            nsRemoteId = existing?.nsRemoteId
+            nsRemoteId = input.nsRemoteId?.takeIf { it.isNotBlank() } ?: existing?.nsRemoteId
         )
         return dao.upsertEntry(entity)
+    }
+
+    suspend fun deleteEntriesBySourceRecordIds(sourceRecordIds: List<String>) {
+        val ids = sourceRecordIds
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+        if (ids.isNotEmpty()) {
+            dao.deleteEntriesBySourceRecordIds(ids)
+        }
     }
 
     suspend fun deleteEntry(entryId: Long) {
         database.withTransaction {
             val existing = dao.getEntryById(entryId)
-            val remoteId = existing?.nsRemoteId
+            val remoteId = existing?.nightscoutDeleteRemoteId()
             if (remoteId != null) {
                 dao.enqueuePendingNightscoutDelete(
                     JournalPendingDeleteEntity(
@@ -102,6 +122,60 @@ class JournalRepository {
 
     suspend fun deleteInsulinPreset(presetId: Long) {
         dao.deleteInsulinPresetById(presetId)
+    }
+
+    suspend fun getInsulinPresetsSnapshot(): List<JournalInsulinPreset> {
+        return dao.getInsulinPresets().map(JournalInsulinPresetEntity::toModel)
+    }
+
+    suspend fun getEntriesBetweenSnapshot(startMillis: Long, endMillis: Long): List<JournalEntry> {
+        return dao.getEntriesBetween(startMillis, endMillis).map(JournalEntryEntity::toModel)
+    }
+
+    suspend fun ensureDefaultFoods() {
+        if (prefs.getBoolean(DEFAULT_FOODS_SEEDED_KEY, false)) return
+        database.withTransaction {
+            val existing = dao.getFoods()
+            if (existing.isEmpty()) {
+                dao.insertFoods(defaultFoods())
+            } else {
+                val builtIns = existing.filter { it.isBuiltIn }
+                val missingDefaults = defaultFoods().filter { preset ->
+                    builtIns.none { existingFood ->
+                        existingFood.sortOrder == preset.sortOrder ||
+                            existingFood.displayName.equals(preset.displayName, ignoreCase = true)
+                    }
+                }
+                if (missingDefaults.isNotEmpty()) {
+                    dao.insertFoods(missingDefaults)
+                }
+            }
+            prefs.edit().putBoolean(DEFAULT_FOODS_SEEDED_KEY, true).apply()
+        }
+    }
+
+    suspend fun upsertFood(input: JournalFoodInput): Long {
+        val existing = input.id?.let { dao.getFoodById(it) }
+        val now = System.currentTimeMillis()
+        val entity = JournalFoodEntity(
+            id = existing?.id ?: (input.id ?: 0L),
+            displayName = input.displayName.trim(),
+            carbsGrams = input.carbsGrams.coerceAtLeast(0f),
+            proteinGrams = input.proteinGrams?.coerceAtLeast(0f),
+            fatGrams = input.fatGrams?.coerceAtLeast(0f),
+            absorptionMinutes = input.absorptionMinutes.coerceIn(15, 480),
+            accentColor = input.accentColor,
+            isBuiltIn = existing?.isBuiltIn ?: input.isBuiltIn,
+            isArchived = input.isArchived,
+            sortOrder = input.sortOrder,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now
+        )
+        return dao.upsertFood(entity)
+    }
+
+    suspend fun deleteFood(foodId: Long) {
+        dao.deleteFoodById(foodId)
     }
 
     private fun defaultPresets(): List<JournalInsulinPresetEntity> {
@@ -267,6 +341,56 @@ class JournalRepository {
         } ?: return null
         return builtInsBySortOrder[legacySortOrder]
     }
+
+    private fun defaultFoods(): List<JournalFoodEntity> {
+        val app = Applic.app
+        val now = System.currentTimeMillis()
+        fun food(
+            nameRes: Int,
+            carbs: Float,
+            protein: Float,
+            fat: Float,
+            minutes: Int,
+            color: Int,
+            sortOrder: Int,
+            archived: Boolean = false
+        ) = JournalFoodEntity(
+            displayName = app.getString(nameRes),
+            carbsGrams = carbs,
+            proteinGrams = protein,
+            fatGrams = fat,
+            absorptionMinutes = minutes,
+            accentColor = color,
+            isBuiltIn = true,
+            isArchived = archived,
+            sortOrder = sortOrder,
+            createdAt = now,
+            updatedAt = now
+        )
+        return listOf(
+            food(R.string.journal_food_fast_carbs, 15f, 0f, 0f, 30, 0xFF4F7C58.toInt(), 0),
+            food(R.string.journal_food_glucose_tabs, 15f, 0f, 0f, 25, 0xFF5B8A61.toInt(), 1),
+            food(R.string.journal_food_balanced_meal, 45f, 20f, 15f, 150, 0xFF5F7D4B.toInt(), 2),
+            food(R.string.journal_food_fruit_yogurt, 30f, 8f, 3f, 95, 0xFF4F7F6B.toInt(), 3),
+            food(R.string.journal_food_oats_cereal, 45f, 12f, 8f, 150, 0xFF6F7E4C.toInt(), 4),
+            food(R.string.journal_food_rice_pasta, 70f, 15f, 8f, 180, 0xFF7D6F46.toInt(), 5),
+            food(R.string.journal_food_slow_meal, 60f, 25f, 25f, 270, 0xFF8A7347.toInt(), 6),
+            food(R.string.journal_food_pizza, 60f, 25f, 30f, 330, 0xFF8A5F3F.toInt(), 7),
+            food(R.string.journal_food_burger_fries, 75f, 30f, 35f, 360, 0xFF8A5838.toInt(), 8),
+            food(R.string.journal_food_low_carb_plate, 8f, 45f, 25f, 300, 0xFF55705D.toInt(), 9),
+            food(R.string.journal_food_dessert, 35f, 6f, 18f, 210, 0xFF7C5F72.toInt(), 10),
+            food(R.string.journal_food_protein_snack, 10f, 25f, 8f, 180, 0xFF6F6650.toInt(), 11)
+        )
+    }
+}
+
+private fun JournalEntryEntity.nightscoutDeleteRemoteId(): String? {
+    nsRemoteId?.takeIf { it.isNotBlank() }?.let { return it }
+    if (source != JournalEntrySource.NIGHTSCOUT.storageValue) return null
+    val parts = sourceRecordId?.split(":") ?: return null
+    if (parts.size != 4 || parts[0] != "nightscout") return null
+    val baseId = parts[2].takeIf { it.isNotBlank() } ?: return null
+    return baseId.takeUnless { it.startsWith("hash", ignoreCase = true) }
 }
 
 private fun JournalEntryEntity.toModel(): JournalEntry {
@@ -282,6 +406,9 @@ private fun JournalEntryEntity.toModel(): JournalEntry {
         durationMinutes = durationMinutes,
         intensity = JournalIntensity.fromStorage(intensity),
         insulinPresetId = insulinPresetId,
+        foodId = foodId,
+        proteinGrams = proteinGrams,
+        fatGrams = fatGrams,
         source = JournalEntrySource.fromStorage(source),
         sourceRecordId = sourceRecordId,
         createdAt = createdAt,
@@ -300,6 +427,21 @@ private fun JournalInsulinPresetEntity.toModel(): JournalInsulinPreset {
         isBuiltIn = isBuiltIn,
         isArchived = isArchived,
         countsTowardIob = countsTowardIob,
+        sortOrder = sortOrder
+    )
+}
+
+private fun JournalFoodEntity.toModel(): JournalFood {
+    return JournalFood(
+        id = id,
+        displayName = displayName,
+        carbsGrams = carbsGrams,
+        proteinGrams = proteinGrams,
+        fatGrams = fatGrams,
+        absorptionMinutes = absorptionMinutes,
+        accentColor = accentColor,
+        isBuiltIn = isBuiltIn,
+        isArchived = isArchived,
         sortOrder = sortOrder
     )
 }

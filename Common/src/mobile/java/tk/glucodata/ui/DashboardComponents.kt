@@ -1,7 +1,9 @@
 package tk.glucodata.ui
 
 import android.view.HapticFeedbackConstants
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Spring
@@ -36,6 +38,7 @@ import androidx.compose.material3.Text
 import tk.glucodata.ui.theme.displayLargeExpressive
 import tk.glucodata.ui.theme.labelSmallPrim
 import tk.glucodata.ui.theme.labelLargeExpressive
+import tk.glucodata.ui.components.CompactSheetDragHandle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
@@ -43,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp as lerpColor
 import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.key
 import androidx.compose.ui.text.font.FontWeight
@@ -88,7 +92,9 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.draw.rotate as modifierRotate
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -101,9 +107,13 @@ import androidx.compose.ui.unit.lerp
 import kotlin.math.cos
 import kotlin.math.sin
 import tk.glucodata.R
+import tk.glucodata.SensorIdentity
 import tk.glucodata.Applic
 import tk.glucodata.CurrentDisplaySource
 import tk.glucodata.DisplayDataState
+import androidx.compose.ui.graphics.toArgb
+import tk.glucodata.GlucoseRangeColors
+import tk.glucodata.TrendProjection
 import tk.glucodata.Notify
 import tk.glucodata.UiRefreshBus
 import tk.glucodata.logic.TrendEngine
@@ -118,8 +128,83 @@ private data class TrendCornerWeights(
     val bottomStart: Float
 )
 
+private enum class GlucoseRangeBand {
+    VERY_LOW,
+    LOW,
+    HIGH,
+    VERY_HIGH
+}
+
+private data class GlucoseHeroTone(
+    val tint: Color,
+    val blendFraction: Float
+)
+
 private fun lerpFloat(start: Float, end: Float, fraction: Float): Float =
     start + (end - start) * fraction.coerceIn(0f, 1f)
+
+private fun fallbackLowThreshold(isMmol: Boolean): Float = GlucoseRangeColors.defaultLow(isMmol)
+
+private fun fallbackHighThreshold(isMmol: Boolean): Float = GlucoseRangeColors.defaultHigh(isMmol)
+
+private fun fallbackVeryLowThreshold(isMmol: Boolean): Float = GlucoseRangeColors.defaultVeryLow(isMmol)
+
+private fun fallbackVeryHighThreshold(isMmol: Boolean): Float = GlucoseRangeColors.defaultVeryHigh(isMmol)
+
+private fun rangeColorForBand(band: GlucoseRangeBand, isDark: Boolean): Color =
+    Color(
+        when (band) {
+            GlucoseRangeBand.VERY_LOW -> GlucoseRangeColors.veryLow(isDark)
+            GlucoseRangeBand.LOW -> GlucoseRangeColors.low(isDark)
+            GlucoseRangeBand.HIGH -> GlucoseRangeColors.high(isDark)
+            GlucoseRangeBand.VERY_HIGH -> GlucoseRangeColors.veryHigh(isDark)
+        }
+    )
+
+private fun glucoseHeroTone(
+    value: Float?,
+    isFreshData: Boolean,
+    isDark: Boolean,
+    isMmol: Boolean,
+    targetLow: Float,
+    targetHigh: Float,
+    veryLowThreshold: Float,
+    veryHighThreshold: Float
+): GlucoseHeroTone? {
+    val currentValue = value?.takeIf { it.isFinite() && it > 0f } ?: return null
+    if (!isFreshData) return null
+
+    val low = targetLow.takeIf { it.isFinite() && it > 0f } ?: fallbackLowThreshold(isMmol)
+    val highCandidate = targetHigh.takeIf { it.isFinite() && it > low } ?: fallbackHighThreshold(isMmol)
+    val high = highCandidate.coerceAtLeast(low + 0.1f)
+    val veryLow = (veryLowThreshold.takeIf { it.isFinite() && it > 0f } ?: fallbackVeryLowThreshold(isMmol))
+        .coerceAtMost(low - 0.1f)
+    val veryHigh = (veryHighThreshold.takeIf { it.isFinite() && it > 0f } ?: fallbackVeryHighThreshold(isMmol))
+        .coerceAtLeast(high + 0.1f)
+
+    fun bandTone(band: GlucoseRangeBand, severity: Float): GlucoseHeroTone {
+        val safeSeverity = severity.coerceIn(0f, 1f)
+        val blend = lerpFloat(0.12f, if (isDark) 0.24f else 0.22f, safeSeverity)
+        return GlucoseHeroTone(
+            tint = rangeColorForBand(band, isDark),
+            blendFraction = blend
+        )
+    }
+
+    return when {
+        currentValue <= veryLow -> bandTone(GlucoseRangeBand.VERY_LOW, 1f)
+        currentValue < low -> {
+            val severity = ((low - currentValue) / (low - veryLow).coerceAtLeast(0.1f)).coerceIn(0f, 1f)
+            bandTone(GlucoseRangeBand.LOW, severity)
+        }
+        currentValue >= veryHigh -> bandTone(GlucoseRangeBand.VERY_HIGH, 1f)
+        currentValue > high -> {
+            val severity = ((currentValue - high) / (veryHigh - high).coerceAtLeast(0.1f)).coerceIn(0f, 1f)
+            bandTone(GlucoseRangeBand.HIGH, severity)
+        }
+        else -> null
+    }
+}
 
 private fun trendCornerWeightsFromVelocity(velocity: Float): TrendCornerWeights {
     val angleDeg = (-velocity * 25f).coerceIn(-90f, 90f)
@@ -186,11 +271,19 @@ fun DashboardCombinedHeader(
     currentSnapshot: CurrentDisplaySource.Snapshot? = null,
     dataState: DisplayDataState.Status? = null,
     isMmol: Boolean,
+    targetLow: Float = fallbackLowThreshold(isMmol),
+    targetHigh: Float = fallbackHighThreshold(isMmol),
+    veryLowThreshold: Float = fallbackVeryLowThreshold(isMmol),
+    veryHighThreshold: Float = fallbackVeryHighThreshold(isMmol),
+    valueRangeColorsEnabled: Boolean = false,
+    arrowForecastColorsEnabled: Boolean = false,
+    peerReadings: List<tk.glucodata.ui.viewmodel.DashboardViewModel.PeerCurrentReading> = emptyList(),
+    onPeerReadingClick: (String) -> Unit = {},
     onHeroClick: () -> Unit = {}
 ) {
     // Determine Colors based on logic
-    // Glucose: Error if low/high, else Primary Container (Tonal)
-    val glucoseContainerColor = MaterialTheme.colorScheme.primaryContainer
+    // Glucose: primary tonal surface with a very light range tint when fresh data is out of range.
+    val glucoseBaseContainerColor = MaterialTheme.colorScheme.primaryContainer
     val glucoseContentColor = MaterialTheme.colorScheme.onPrimaryContainer
 
     // Sensor: Surface Variant (Tonal) vs Tertiary Container (Expiring)
@@ -306,6 +399,87 @@ fun DashboardCombinedHeader(
     val hasSecondary = secondaryText != null
     val hasTertiary = tertiaryText != null
     val hasThreeValues = hasSecondary && hasTertiary
+    val isDark = isSystemInDarkTheme()
+    val glucoseTone = remember(
+        dvs?.primaryValue,
+        isFreshData,
+        isDark,
+        isMmol,
+        targetLow,
+        targetHigh,
+        veryLowThreshold,
+        veryHighThreshold
+    ) {
+        glucoseHeroTone(
+            value = dvs?.primaryValue,
+            isFreshData = isFreshData,
+            isDark = isDark,
+            isMmol = isMmol,
+            targetLow = targetLow,
+            targetHigh = targetHigh,
+            veryLowThreshold = veryLowThreshold,
+            veryHighThreshold = veryHighThreshold
+        )
+    }
+    // Optional GDH-style traffic coloring of the value itself: green in
+    // target range, yellow up to the alarm bounds, red beyond.
+    val heroValueColor = if (valueRangeColorsEnabled && isFreshData) {
+        val fallbackArgb = glucoseContentColor.toArgb()
+        remember(dvs?.primaryValue, isDark, isMmol, targetLow, targetHigh, veryLowThreshold, veryHighThreshold, fallbackArgb) {
+            Color(
+                GlucoseRangeColors.trafficColorForValue(
+                    dvs?.primaryValue ?: Float.NaN,
+                    targetLow,
+                    targetHigh,
+                    veryLowThreshold,
+                    veryHighThreshold,
+                    isDark,
+                    isMmol,
+                    fallbackArgb
+                )
+            )
+        }
+    } else {
+        glucoseContentColor
+    }
+    // Arrow: optionally colored by the 30-minute linear forecast (the value
+    // says where you are, the arrow where you're heading). isFreshData uses
+    // the display timeout, which is too lenient for a forecast: after a
+    // reconnect gap the trend only describes the pre-gap drop, so the
+    // classifier additionally caps the data age.
+    val heroArrowColor = if (arrowForecastColorsEnabled && isFreshData) {
+        val forecastRisk = remember(
+            dvs?.primaryValue, trendResult, isMmol, resolvedDataState,
+            targetLow, targetHigh, veryLowThreshold, veryHighThreshold
+        ) {
+            val toMgdl = if (isMmol) 18.016f else 1f
+            TrendProjection.classify(
+                (dvs?.primaryValue ?: Float.NaN) * toMgdl,
+                trendResult.velocity,
+                resolvedDataState.ageMillis,
+                TrendProjection.DEFAULT_HORIZON_MINUTES,
+                targetLow * toMgdl,
+                targetHigh * toMgdl,
+                veryLowThreshold * toMgdl,
+                veryHighThreshold * toMgdl
+            )
+        }
+        when (forecastRisk) {
+            TrendProjection.OUT -> Color(GlucoseRangeColors.valueOut(isDark))
+            TrendProjection.BORDERLINE -> Color(GlucoseRangeColors.valueBorderline(isDark))
+            else -> heroValueColor
+        }
+    } else {
+        heroValueColor
+    }
+    val targetGlucoseContainerColor = glucoseTone?.let { tone ->
+        lerpColor(glucoseBaseContainerColor, tone.tint, tone.blendFraction)
+    } ?: glucoseBaseContainerColor
+    val glucoseContainerColor by animateColorAsState(
+        targetValue = targetGlucoseContainerColor,
+        animationSpec = spring(stiffness = Spring.StiffnessLow),
+        label = "HeroRangeContainerColor"
+    )
 
     val heroCardContent: @Composable () -> Unit = {
             var heroContentWidthPx by remember { mutableStateOf(0) }
@@ -333,27 +507,49 @@ fun DashboardCombinedHeader(
                     else -> 28.dp
                 }
                 val resolvedEndPadding = if (heroWidthClass == AdaptiveContentWidthClass.Compact) 12.dp else 16.dp
-                val resolvedVerticalPadding = if (heroWidthClass == AdaptiveContentWidthClass.Compact) 10.dp else 12.dp
-                val resolvedTrendIconSize = when (heroWidthClass) {
-                    AdaptiveContentWidthClass.Compact -> 30.dp
-                    AdaptiveContentWidthClass.Medium -> 38.dp
-                    AdaptiveContentWidthClass.Expanded -> 42.dp
-                }
-                val resolvedClusterGap = if (heroWidthClass == AdaptiveContentWidthClass.Compact) 8.dp else 12.dp
-                val primaryValueStyle = (
+                // Multi-sensor mode: the value + chip are scaled down (so they
+                // read as a balanced cluster), and the hero CARD is pinned to the
+                // single-sensor content height (heroContentMinHeight below) so it
+                // never grows or shrinks — the scaled cluster just centers inside it.
+                val isMultiHero = peerReadings.isNotEmpty()
+                val heroMultiSensorScale = if (isMultiHero) 0.74f else 1f
+                // Single-sensor padding defines the target card height. Multi mode
+                // uses a smaller inner padding so the scaled value + chip cluster
+                // fills the SAME pinned height (heroContentMinHeight) below.
+                val singleVerticalPadding = if (heroWidthClass == AdaptiveContentWidthClass.Compact) 10.dp else 12.dp
+                val resolvedVerticalPadding = if (isMultiHero) 4.dp else singleVerticalPadding
+                // Full (single-sensor) value style. The card height is pinned to
+                // the MEASURED height of this style (incl. font padding) + padding,
+                // so multi-sensor mode renders at the exact same card height — not
+                // the lineHeight estimate, which understated it and made multi smaller.
+                val fullPrimaryStyle = (
                     if (heroWidthClass == AdaptiveContentWidthClass.Compact) MaterialTheme.typography.displayMedium
                     else MaterialTheme.typography.displayLargeExpressive
                 ).copy(fontFeatureSettings = "tnum")
+                val heroTextMeasurer = rememberTextMeasurer()
+                val heroContentMinHeight = remember(fullPrimaryStyle, density, singleVerticalPadding) {
+                    with(density) {
+                        heroTextMeasurer.measure("0,0", style = fullPrimaryStyle, maxLines = 1)
+                            .size.height.toDp()
+                    } + singleVerticalPadding * 2
+                }
+                val resolvedTrendIconSize = (when (heroWidthClass) {
+                    AdaptiveContentWidthClass.Compact -> 30.dp
+                    AdaptiveContentWidthClass.Medium -> 38.dp
+                    AdaptiveContentWidthClass.Expanded -> 42.dp
+                } * heroMultiSensorScale)
+                val resolvedClusterGap = if (heroWidthClass == AdaptiveContentWidthClass.Compact) 8.dp else 12.dp
+                val primaryValueStyle = fullPrimaryStyle.scaleForHero(heroMultiSensorScale)
                 val secondaryInlineStyle = when (heroWidthClass) {
                     AdaptiveContentWidthClass.Compact -> MaterialTheme.typography.headlineSmall
                     AdaptiveContentWidthClass.Medium -> MaterialTheme.typography.headlineMedium
                     AdaptiveContentWidthClass.Expanded -> MaterialTheme.typography.headlineLarge
-                }.copy(fontFeatureSettings = "tnum")
+                }.copy(fontFeatureSettings = "tnum").scaleForHero(heroMultiSensorScale)
                 val slashStyle = when (heroWidthClass) {
                     AdaptiveContentWidthClass.Compact -> MaterialTheme.typography.headlineSmall
                     AdaptiveContentWidthClass.Medium -> MaterialTheme.typography.headlineMedium
                     AdaptiveContentWidthClass.Expanded -> MaterialTheme.typography.headlineLarge
-                }.copy(fontFeatureSettings = "tnum")
+                }.copy(fontFeatureSettings = "tnum").scaleForHero(heroMultiSensorScale)
                 val secondaryThreeValueStyle = (
                     when (heroWidthClass) {
                         AdaptiveContentWidthClass.Compact -> MaterialTheme.typography.titleLarge.copy(
@@ -369,7 +565,7 @@ fun DashboardCombinedHeader(
                             lineHeight = 40.sp
                         )
                     }
-                ).copy(fontFeatureSettings = "tnum")
+                ).copy(fontFeatureSettings = "tnum").scaleForHero(heroMultiSensorScale)
                 val tertiaryThreeValueStyle = (
                     when (heroWidthClass) {
                         AdaptiveContentWidthClass.Compact -> MaterialTheme.typography.titleSmall.copy(
@@ -385,7 +581,7 @@ fun DashboardCombinedHeader(
                             lineHeight = 30.sp
                         )
                     }
-                ).copy(fontFeatureSettings = "tnum")
+                ).copy(fontFeatureSettings = "tnum").scaleForHero(heroMultiSensorScale)
                 val statusTitleStyle = when (heroWidthClass) {
                     AdaptiveContentWidthClass.Compact -> MaterialTheme.typography.titleMedium
                     AdaptiveContentWidthClass.Medium -> MaterialTheme.typography.titleLarge
@@ -447,14 +643,14 @@ fun DashboardCombinedHeader(
                                 DashboardHeroPrimaryText(
                                     value = primaryText,
                                     style = primaryValueStyle,
-                                    color = glucoseContentColor
+                                    color = heroValueColor
                                 )
                             }
 
                             tk.glucodata.ui.components.TrendIndicator(
                                 trendResult = trendResult,
                                 modifier = Modifier.size(resolvedTrendIconSize),
-                                color = glucoseContentColor
+                                color = heroArrowColor
                             )
                         }
 
@@ -505,39 +701,66 @@ fun DashboardCombinedHeader(
                                 modifier = Modifier.padding(top = 4.dp)
                             )
                         }
+
+                        if (peerReadings.isNotEmpty()) {
+                            DashboardHeroPeerStrip(
+                                peerReadings = peerReadings,
+                                selectedSensorIds = activeSensors,
+                                contentColor = glucoseContentColor,
+                                onPeerClick = onPeerReadingClick,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
                     }
                 } else {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxSize()
+                            .heightIn(min = heroContentMinHeight)
                             .padding(
                                 start = resolvedStartPadding,
                                 end = resolvedEndPadding,
                                 top = resolvedVerticalPadding,
                                 bottom = resolvedVerticalPadding
                             ),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.Center
                     ) {
-                        DashboardHeroValueCluster(
-                            modifier = Modifier.weight(1f),
-                            primaryText = primaryText,
-                            secondaryText = secondaryText,
-                            tertiaryText = tertiaryText,
-                            primaryStyle = primaryValueStyle,
-                            secondaryInlineStyle = secondaryInlineStyle,
-                            separatorStyle = slashStyle,
-                            secondaryStackStyle = secondaryThreeValueStyle,
-                            tertiaryStackStyle = tertiaryThreeValueStyle,
-                            contentColor = glucoseContentColor
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            DashboardHeroValueCluster(
+                                modifier = Modifier.weight(1f),
+                                primaryText = primaryText,
+                                secondaryText = secondaryText,
+                                tertiaryText = tertiaryText,
+                                primaryStyle = primaryValueStyle,
+                                secondaryInlineStyle = secondaryInlineStyle,
+                                separatorStyle = slashStyle,
+                                secondaryStackStyle = secondaryThreeValueStyle,
+                                tertiaryStackStyle = tertiaryThreeValueStyle,
+                                contentColor = glucoseContentColor,
+                                primaryColor = heroValueColor
+                            )
 
-                        Spacer(modifier = Modifier.width(resolvedClusterGap))
+                            Spacer(modifier = Modifier.width(resolvedClusterGap))
 
-                        tk.glucodata.ui.components.TrendIndicator(
-                            trendResult = trendResult,
-                            modifier = Modifier.size(resolvedTrendIconSize),
-                            color = glucoseContentColor
-                        )
+                            tk.glucodata.ui.components.TrendIndicator(
+                                trendResult = trendResult,
+                                modifier = Modifier.size(resolvedTrendIconSize),
+                                color = heroArrowColor
+                            )
+                        }
+
+                        if (peerReadings.isNotEmpty()) {
+                            DashboardHeroPeerStrip(
+                                peerReadings = peerReadings,
+                                selectedSensorIds = activeSensors,
+                                contentColor = glucoseContentColor,
+                                onPeerClick = onPeerReadingClick,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -639,12 +862,22 @@ fun DashboardCombinedHeader(
                             // Active Indicators (Dots) - Right of Name
                             // Hidden if only 1 active sensor
                             if (activeSensors.size > 1) {
+                                val selectedSensorColors = remember(activeSensors) {
+                                    tk.glucodata.SensorVisuals.distinctColorArgbMap(activeSensors)
+                                }
                                 Spacer(modifier = Modifier.width(6.dp))
                                 activeSensors.forEach { serial ->
                                      Box(
                                          modifier = Modifier
                                              .size(6.dp)
-                                             .background(tk.glucodata.ui.viewmodel.SensorColors.getColor(serial), androidx.compose.foundation.shape.CircleShape)
+                                             .background(
+                                                 Color(
+                                                     selectedSensorColors.entries.firstOrNull { (selected, _) ->
+                                                         tk.glucodata.SensorIdentity.matches(selected, serial)
+                                                     }?.value ?: tk.glucodata.SensorVisuals.colorArgb(serial)
+                                                 ),
+                                                 androidx.compose.foundation.shape.CircleShape
+                                             )
                                      )
                                      Spacer(modifier = Modifier.width(4.dp))
                                 }
@@ -766,6 +999,87 @@ private fun DashboardHeroPrimaryText(
     }
 }
 
+/**
+ * Compact per-peer value chips inside the hero card. Each chip shows the
+ * peer sensor's current value (and secondary lane when present) with its
+ * subtle identity tint plus a small trend arrow; tapping promotes the peer
+ * to the primary display sensor.
+ */
+@Composable
+private fun DashboardHeroPeerStrip(
+    peerReadings: List<tk.glucodata.ui.viewmodel.DashboardViewModel.PeerCurrentReading>,
+    selectedSensorIds: List<String>,
+    contentColor: Color,
+    onPeerClick: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        val selectedColors = remember(selectedSensorIds, peerReadings) {
+            tk.glucodata.SensorVisuals.distinctColorArgbMap(
+                selectedSensorIds.ifEmpty { peerReadings.map { it.sensorId } }
+            )
+        }
+        peerReadings.forEach { peer ->
+            val identityColor = Color(
+                selectedColors.entries.firstOrNull { (selected, _) ->
+                    tk.glucodata.SensorIdentity.matches(selected, peer.sensorId)
+                }?.value ?: tk.glucodata.SensorVisuals.colorArgb(peer.sensorId)
+            )
+            val textColor = lerpColor(contentColor, identityColor, tk.glucodata.SensorVisuals.PEER_TEXT_BLEND)
+            val velocity = if (peer.rate.isFinite()) peer.rate else 0f
+            val peerTrend = remember(peer.sensorId, velocity) {
+                tk.glucodata.logic.TrendEngine.TrendResult(
+                    state = tk.glucodata.logic.TrendEngine.TrendState.Unknown,
+                    velocity = velocity,
+                    acceleration = 0f,
+                    confidence = 1f
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(identityColor.copy(alpha = 0.14f))
+                    .clickable { onPeerClick(peer.sensorId) }
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .background(identityColor.copy(alpha = 0.9f), CircleShape)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = peer.primaryStr,
+                    style = MaterialTheme.typography.titleSmall.copy(fontFeatureSettings = "tnum"),
+                    color = textColor,
+                    softWrap = false,
+                    maxLines = 1
+                )
+                peer.secondaryStr?.let { secondary ->
+                    Text(
+                        text = " · $secondary",
+                        style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                        color = textColor.copy(alpha = 0.72f),
+                        softWrap = false,
+                        maxLines = 1
+                    )
+                }
+                Spacer(modifier = Modifier.width(4.dp))
+                tk.glucodata.ui.components.TrendIndicator(
+                    trendResult = peerTrend,
+                    color = textColor,
+                    modifier = Modifier.size(12.dp)
+                )
+            }
+        }
+    }
+}
+
 private enum class DashboardHeroValueLayoutMode {
     PrimaryOnly,
     InlinePair,
@@ -793,7 +1107,8 @@ private fun DashboardHeroValueCluster(
     secondaryStackStyle: TextStyle,
     tertiaryStackStyle: TextStyle,
     contentColor: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    primaryColor: Color = contentColor
 ) {
     val hasSecondary = secondaryText != null
     val hasTertiary = tertiaryText != null
@@ -870,7 +1185,7 @@ private fun DashboardHeroValueCluster(
                 DashboardHeroPrimaryText(
                     value = primaryText,
                     style = primaryStyle,
-                    color = contentColor
+                    color = primaryColor
                 )
             }
 
@@ -885,7 +1200,7 @@ private fun DashboardHeroValueCluster(
                     DashboardHeroPrimaryText(
                         value = primaryText,
                         style = scaledPrimaryStyle,
-                        color = contentColor
+                        color = primaryColor
                     )
                     Spacer(modifier = Modifier.width(6.dp * pairScale))
                     Text(
@@ -920,7 +1235,7 @@ private fun DashboardHeroValueCluster(
                     DashboardHeroPrimaryText(
                         value = primaryText,
                         style = scaledPrimaryStyle,
-                        color = contentColor
+                        color = primaryColor
                     )
 
                     Spacer(modifier = Modifier.width(8.dp * stackScale))
@@ -1303,6 +1618,7 @@ private fun SwipeableDeleteRow(
 fun CalibrationsCard(
     viewMode: Int,
     isMmol: Boolean,
+    sensorId: String,
     showEmptyAction: Boolean = true,
     onAddCalibration: () -> Unit,
     onEditCalibration: (tk.glucodata.data.calibration.CalibrationEntity) -> Unit,
@@ -1314,14 +1630,17 @@ fun CalibrationsCard(
     // Collect calibrations and enable state
     val allCalibrations by tk.glucodata.data.calibration.CalibrationManager.getCalibrationsFlow()?.collectAsState(initial = tk.glucodata.data.calibration.CalibrationManager.getCachedCalibrations())
         ?: androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(tk.glucodata.data.calibration.CalibrationManager.getCachedCalibrations()) }
-    val currentSensor = tk.glucodata.Natives.lastsensorname() ?: ""
+    val currentSensor = SensorIdentity.resolveAppSensorId(sensorId) ?: sensorId
     val calibrations = allCalibrations.filter {
-        it.isRawMode == isRawMode && (it.sensorId == currentSensor || it.sensorId.isEmpty())
+        currentSensor.isNotBlank() &&
+            it.isRawMode == isRawMode &&
+            tk.glucodata.data.calibration.CalibrationManager.calibrationMatchesSensor(it.sensorId, currentSensor)
     }
     
-    val isEnabledForRaw by tk.glucodata.data.calibration.CalibrationManager.isEnabledForRaw.collectAsState()
-    val isEnabledForAuto by tk.glucodata.data.calibration.CalibrationManager.isEnabledForAuto.collectAsState()
-    val isCalibrationEnabled = if (isRawMode) isEnabledForRaw else isEnabledForAuto
+    val calibrationRevision by tk.glucodata.data.calibration.CalibrationManager.revision.collectAsState()
+    val isCalibrationEnabled = remember(isRawMode, currentSensor, calibrationRevision) {
+        tk.glucodata.data.calibration.CalibrationManager.isEnabledForMode(isRawMode, currentSensor)
+    }
     
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val dateFormatter = androidx.compose.runtime.remember { java.text.SimpleDateFormat("MMM d, HH:mm", java.util.Locale.getDefault()) }
@@ -1444,7 +1763,7 @@ fun CalibrationsCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { 
-                        tk.glucodata.data.calibration.CalibrationManager.setEnabledForMode(isRawMode, !isCalibrationEnabled) 
+                        tk.glucodata.data.calibration.CalibrationManager.setEnabledForMode(isRawMode, !isCalibrationEnabled, currentSensor)
                     }
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1466,7 +1785,7 @@ fun CalibrationsCard(
                 androidx.compose.material3.Switch(
                     checked = isCalibrationEnabled,
                     onCheckedChange = { enabled ->
-                        tk.glucodata.data.calibration.CalibrationManager.setEnabledForMode(isRawMode, enabled)
+                        tk.glucodata.data.calibration.CalibrationManager.setEnabledForMode(isRawMode, enabled, currentSensor)
                     },
                     thumbContent = if (isCalibrationEnabled) {
                         {
@@ -1723,7 +2042,7 @@ fun SignalQualityIndicator(
         
         // Raw noise value (xDrip-style, 1 decimal)
         Text(
-            text = String.format(java.util.Locale.US, "%.1f", noiseLevel),
+            text = String.format(java.util.Locale.getDefault(), "%.1f", noiseLevel),
             style = MaterialTheme.typography.labelSmall,
             color = color.copy(alpha = 0.9f)
         )
@@ -1748,7 +2067,7 @@ private fun DashboardClearOptionsBottomSheet(
     androidx.compose.material3.ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        dragHandle = { androidx.compose.material3.BottomSheetDefaults.DragHandle() }
+        dragHandle = { CompactSheetDragHandle() }
     ) {
         Column(
             modifier = Modifier
