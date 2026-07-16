@@ -2,6 +2,10 @@ package tk.glucodata.drivers.sibionics
 
 import android.content.Context
 import android.content.SharedPreferences
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.util.Base64
 import tk.glucodata.Applic
 import tk.glucodata.Log
@@ -27,6 +31,13 @@ object SibionicsRegistry {
     private const val PREF_CUSTOM_ALGORITHM_PREFIX = "sibionics_managed_custom_algorithm_"
     private const val PREF_ALGORITHM_SELECTION_PREFIX = "sibionics_managed_algorithm_selection_"
     private const val PREF_LOCAL_REBUILD_FINGERPRINT_PREFIX = "sibionics_managed_rebuild_fingerprint_"
+    private const val PREF_INTEGRATED_CALIBRATION_BASELINE_PREFIX = "sibionics_managed_calibration_baseline_"
+
+    data class IntegratedCalibrationBaseline(
+        val unit: Int,
+        val values: FloatArray,
+        val timestamps: LongArray,
+    )
 
     data class SensorRecord(
         val sensorId: String,
@@ -226,6 +237,7 @@ object SibionicsRegistry {
             remove(PREF_CUSTOM_ALGORITHM_PREFIX + id)
             remove(PREF_ALGORITHM_SELECTION_PREFIX + id)
             remove(PREF_LOCAL_REBUILD_FINGERPRINT_PREFIX + id)
+            remove(PREF_INTEGRATED_CALIBRATION_BASELINE_PREFIX + id)
         }.apply()
         ManagedSensorUiSignals.markDeviceListDirty()
         SensorIdentity.invalidateCaches()
@@ -307,6 +319,60 @@ object SibionicsRegistry {
     fun saveLocalRebuildFingerprint(context: Context, sensorId: String, fingerprint: String) {
         prefs(context).edit()
             .putString(PREF_LOCAL_REBUILD_FINGERPRINT_PREFIX + sensorId, fingerprint)
+            .apply()
+    }
+
+    fun loadIntegratedCalibrationBaseline(
+        context: Context,
+        sensorId: String,
+    ): IntegratedCalibrationBaseline? {
+        val encoded = prefs(context).getString(
+            PREF_INTEGRATED_CALIBRATION_BASELINE_PREFIX + sensorId,
+            null,
+        ) ?: return null
+        return runCatching {
+            DataInputStream(ByteArrayInputStream(Base64.getDecoder().decode(encoded))).use { input ->
+                val unit = input.readInt()
+                val count = input.readInt()
+                require(count in 1..128)
+                val values = FloatArray(count)
+                val timestamps = LongArray(count)
+                repeat(count) { index ->
+                    timestamps[index] = input.readLong()
+                    values[index] = input.readFloat()
+                    require(timestamps[index] > 0L && values[index].isFinite() && values[index] > 0f)
+                }
+                IntegratedCalibrationBaseline(unit, values, timestamps)
+            }
+        }.getOrNull()
+    }
+
+    fun saveIntegratedCalibrationBaseline(
+        context: Context,
+        sensorId: String,
+        unit: Int,
+        values: FloatArray,
+        timestamps: LongArray,
+    ) {
+        if (values.size != timestamps.size || values.isEmpty() || values.size > 128) return
+        val encoded = runCatching {
+            ByteArrayOutputStream().use { bytes ->
+                DataOutputStream(bytes).use { output ->
+                    output.writeInt(unit)
+                    output.writeInt(values.size)
+                    values.indices.forEach { index ->
+                        val value = values[index]
+                        val timestamp = timestamps[index]
+                        require(value.isFinite() && value > 0f && timestamp > 0L)
+                        output.writeLong(timestamp)
+                        output.writeFloat(value)
+                    }
+                }
+                Base64.getEncoder().encodeToString(bytes.toByteArray())
+            }
+        }.getOrNull() ?: return
+        prefs(context).edit()
+            .putString(PREF_INTEGRATED_CALIBRATION_BASELINE_PREFIX + sensorId, encoded)
             .apply()
     }
 

@@ -15,7 +15,14 @@ internal data class SibionicsReplayResult(
     val sourceSamples: List<SibionicsSourceSample>,
 )
 
+internal data class SibionicsIntegratedCalibrationBaseline(
+    val values: FloatArray,
+    val timestamps: LongArray,
+)
+
 internal object SibionicsAlgorithmRebuilder {
+    private const val CALIBRATION_ANCHOR_MATCH_MS = 10L * 60L * 1000L
+
     fun isContiguousFromSensorStart(samples: List<SibionicsSourceSample>): Boolean {
         if (samples.isEmpty() || samples.first().index !in 0..1) return false
         return samples.zipWithNext().all { (before, after) -> after.index == before.index + 1 }
@@ -102,5 +109,39 @@ internal object SibionicsAlgorithmRebuilder {
             }
         }
         return SibionicsReplayResult(rebuiltContext, readings, sourceSamples)
+    }
+
+    fun calibrationBaselineAtAnchors(
+        displayStock: FloatArray,
+        timestamps: LongArray,
+        packedAnchors: DoubleArray,
+    ): SibionicsIntegratedCalibrationBaseline? {
+        if (displayStock.size != timestamps.size || displayStock.isEmpty()) return null
+        if (packedAnchors.size < 3 || packedAnchors.size % 3 != 0) return null
+        val matched = LinkedHashMap<Long, Float>()
+        packedAnchors.indices.step(3).forEach { anchorOffset ->
+            val anchorTimestamp = packedAnchors[anchorOffset + 2].toLong()
+            if (anchorTimestamp <= 0L) return@forEach
+            var nearestIndex = -1
+            var nearestDistance = Long.MAX_VALUE
+            timestamps.indices.forEach { index ->
+                val value = displayStock[index]
+                val timestamp = timestamps[index]
+                if (!value.isFinite() || value <= 0f || timestamp <= 0L) return@forEach
+                val distance = kotlin.math.abs(timestamp - anchorTimestamp)
+                if (distance < nearestDistance) {
+                    nearestDistance = distance
+                    nearestIndex = index
+                }
+            }
+            if (nearestIndex >= 0 && nearestDistance <= CALIBRATION_ANCHOR_MATCH_MS) {
+                matched[timestamps[nearestIndex]] = displayStock[nearestIndex]
+            }
+        }
+        if (matched.isEmpty()) return null
+        return SibionicsIntegratedCalibrationBaseline(
+            values = matched.values.toFloatArray(),
+            timestamps = matched.keys.toLongArray(),
+        )
     }
 }

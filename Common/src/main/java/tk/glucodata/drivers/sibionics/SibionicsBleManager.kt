@@ -185,6 +185,16 @@ class SibionicsBleManager(
         sensitivity = SibionicsSensitivity.sensitivityFor(shortCode)
         autoResetDays = SibionicsRegistry.loadAutoResetDays(context, SerialNumber)
         algorithmSelection = SibionicsRegistry.loadAlgorithmSelection(context, SerialNumber)
+        SibionicsRegistry.loadIntegratedCalibrationBaseline(context, SerialNumber)
+            ?.takeIf { it.unit == Applic.unit }
+            ?.let { baseline ->
+                tk.glucodata.CalibrationAccess.seedIntegratedCalibrationBaseline(
+                    values = baseline.values,
+                    timestamps = baseline.timestamps,
+                    isRawMode = false,
+                    sensorIdOverride = SerialNumber,
+                )
+            }
         synchronized(algorithmLock) {
             algorithm.configure(shortCode, sensitivity, variant, algorithmSelection)
         }
@@ -1148,12 +1158,7 @@ class SibionicsBleManager(
             sensitivity = sensitivitySnapshot,
             unitIsMmol = Applic.unit == 1,
         ) { displayStock, timestamps ->
-            tk.glucodata.CalibrationAccess.getIntegratedCalibratedSeries(
-                values = displayStock,
-                timestamps = timestamps,
-                isRawMode = false,
-                sensorIdOverride = SerialNumber,
-            )
+            calibratedDisplaySeries(displayStock, timestamps)
         }
         return AlgorithmRebuildResult(
             context = replay.context,
@@ -1169,6 +1174,40 @@ class SibionicsBleManager(
                 )
             },
             sourceSamples = replay.sourceSamples,
+        )
+    }
+
+    private fun calibratedDisplaySeries(displayStock: FloatArray, timestamps: LongArray): FloatArray {
+        val packedAnchors = tk.glucodata.CalibrationAccess.getActiveCalibrationAnchors(
+            SerialNumber,
+            false,
+        )
+        SibionicsAlgorithmRebuilder.calibrationBaselineAtAnchors(
+            displayStock = displayStock,
+            timestamps = timestamps,
+            packedAnchors = packedAnchors,
+        )?.let { baseline ->
+            tk.glucodata.CalibrationAccess.seedIntegratedCalibrationBaseline(
+                values = baseline.values,
+                timestamps = baseline.timestamps,
+                isRawMode = false,
+                sensorIdOverride = SerialNumber,
+            )
+            Applic.app?.let { context ->
+                SibionicsRegistry.saveIntegratedCalibrationBaseline(
+                    context = context,
+                    sensorId = SerialNumber,
+                    unit = Applic.unit,
+                    values = baseline.values,
+                    timestamps = baseline.timestamps,
+                )
+            }
+        }
+        return tk.glucodata.CalibrationAccess.getIntegratedCalibratedSeries(
+            values = displayStock,
+            timestamps = timestamps,
+            isRawMode = false,
+            sensorIdOverride = SerialNumber,
         )
     }
 

@@ -69,6 +69,17 @@ object CalibrationAccess {
             )
         }.getOrNull()
     }
+    private val seedIntegratedCalibrationBaselineMethod by lazy {
+        runCatching {
+            holder?.getMethod(
+                "seedIntegratedCalibrationBaseline",
+                FloatArray::class.java,
+                LongArray::class.java,
+                Boolean::class.javaPrimitiveType,
+                String::class.java,
+            )
+        }.getOrNull()
+    }
 
     @JvmStatic
     fun hasActiveCalibration(isRawMode: Boolean, sensorId: String? = null): Boolean {
@@ -167,5 +178,24 @@ object CalibrationAccess {
                 else -> 0L
             }
         }.getOrDefault(0L)
+    }
+
+    @JvmStatic
+    fun seedIntegratedCalibrationBaseline(
+        values: FloatArray,
+        timestamps: LongArray,
+        isRawMode: Boolean,
+        sensorIdOverride: String?,
+    ) {
+        if (values.size != timestamps.size || values.isEmpty()) return
+        runCatching {
+            seedIntegratedCalibrationBaselineMethod?.invoke(
+                instance,
+                values,
+                timestamps,
+                isRawMode,
+                sensorIdOverride,
+            )
+        }
     }
 }
