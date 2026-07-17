@@ -69,6 +69,18 @@ object AlertRepository {
     private fun readSoundDelaySeconds(type: AlertType): Int =
         sanitizeSoundDelaySeconds(type, prefs.getInt(keySoundDelaySeconds(type), 0))
 
+    // Sensor-expiry pre-warning thresholds (minutes), stored as a StringSet.
+    private fun keyExpiryWarnings(type: AlertType) = "alert_${type.id}_expiryWarnings"
+
+    /** Missing key -> default (24h migration); present-but-empty -> no pre-warning. */
+    private fun readExpiryWarnings(type: AlertType, default: Set<Int>): Set<Int> {
+        if (!prefs.contains(keyExpiryWarnings(type))) {
+            return default
+        }
+        val raw = prefs.getStringSet(keyExpiryWarnings(type), null) ?: return default
+        return sanitizeExpiryWarningMinutes(raw.mapNotNull { it.toIntOrNull() }.toSet())
+    }
+
     private inline fun <reified T : Enum<T>> parseEnumPref(value: String?, fallback: T): T {
         return value?.let { raw ->
             runCatching { enumValueOf<T>(raw.uppercase()) }.getOrNull()
@@ -268,7 +280,8 @@ object AlertRepository {
                 ?.let { GlucoseDelta.sanitizeIntervalMinutes(it) },
             earlyTriggerEnabled = prefs.getBoolean(keyEarlyTrigger(type), false),
             soundDelayEnabled = prefs.getBoolean(keySoundDelayEnabled(type), false),
-            soundDelaySeconds = readSoundDelaySeconds(type)
+            soundDelaySeconds = readSoundDelaySeconds(type),
+            expiryWarningMinutes = readExpiryWarnings(type, default.expiryWarningMinutes)
         )
     }
 
@@ -323,6 +336,13 @@ object AlertRepository {
             putBoolean(keyEarlyTrigger(config.type), config.earlyTriggerEnabled)
             putBoolean(keySoundDelayEnabled(config.type), config.soundDelayEnabled)
             putInt(keySoundDelaySeconds(config.type), sanitizeSoundDelaySeconds(config.type, config.soundDelaySeconds))
+            // Type-specific: only the sensor-expiry alert carries pre-warnings.
+            if (config.type == AlertType.SENSOR_EXPIRY) {
+                putStringSet(
+                    keyExpiryWarnings(config.type),
+                    sanitizeExpiryWarningMinutes(config.expiryWarningMinutes).map { it.toString() }.toSet()
+                )
+            }
         }
     }
     

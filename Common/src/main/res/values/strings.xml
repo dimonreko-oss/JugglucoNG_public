@@ -822,6 +822,19 @@ Pressing OK will generate a connection on this phone and display a QR code that 
     <string name="delta_alarm_interval_follow">Like Δ readout (currently %1$d min)</string>
     <string name="delta_early_trigger_label">Early trigger</string>
     <string name="delta_early_trigger_desc">Also fire as soon as the total distance (%1$s %2$s) is covered, no matter how many intervals have passed</string>
+    <!-- Sensor-expiry pre-warnings -->
+    <string name="sensor_expiry_warnings_title">Warn before expiry</string>
+    <string name="sensor_expiry_warnings_desc">Each selected time warns once per sensor</string>
+    <string name="sensor_expiry_group_days">Days</string>
+    <string name="sensor_expiry_group_hours">Hours</string>
+    <plurals name="sensor_expires_in_days">
+        <item quantity="one">Sensor expires in %d day</item>
+        <item quantity="other">Sensor expires in %d days</item>
+    </plurals>
+    <plurals name="sensor_expires_in_hours">
+        <item quantity="one">Sensor expires in %d hour</item>
+        <item quantity="other">Sensor expires in %d hours</item>
+    </plurals>
     <string name="alert_value_available">Value Available</string>
     <string name="alert_amount">Amount Alert</string>
 

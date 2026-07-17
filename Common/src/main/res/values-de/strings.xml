@@ -739,6 +739,19 @@ Durch Drücken von „OK“ wird eine Verbindung auf diesem Telefon hergestellt 
     <string name="delta_alarm_interval_follow">Wie Δ-Anzeige (aktuell %1$d Min)</string>
     <string name="delta_early_trigger_label">Frühauslösung</string>
     <string name="delta_early_trigger_desc">Auch auslösen, sobald die Gesamtstrecke (%1$s %2$s) erreicht ist – unabhängig davon, wie viele Intervalle vergangen sind</string>
+    <!-- Sensor-Ablauf-Vorwarnungen -->
+    <string name="sensor_expiry_warnings_title">Vor Ablauf warnen</string>
+    <string name="sensor_expiry_warnings_desc">Jede gewählte Zeit warnt einmal pro Sensor</string>
+    <string name="sensor_expiry_group_days">Tage</string>
+    <string name="sensor_expiry_group_hours">Stunden</string>
+    <plurals name="sensor_expires_in_days">
+        <item quantity="one">Sensor läuft in %d Tag ab</item>
+        <item quantity="other">Sensor läuft in %d Tagen ab</item>
+    </plurals>
+    <plurals name="sensor_expires_in_hours">
+        <item quantity="one">Sensor läuft in %d Stunde ab</item>
+        <item quantity="other">Sensor läuft in %d Stunden ab</item>
+    </plurals>
     <string name="alert_value_available">Wert verfügbar</string>
     <string name="alert_very_high">Sehr hoch</string>
     <string name="alert_very_low">Sehr niedrig</string>
