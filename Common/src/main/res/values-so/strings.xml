@@ -450,7 +450,7 @@ Marka la cadaadiyo OK waxay dhalin doontaa xidhiidh teleefankan oo waxa ay soo b
  <string name="nonewdata">"Ma jirto xog cusub"</string>
  <string name="newdata">"xog cusub"</string>
 <string name="isconnected">Ku xidhan</string> 
-<string name="isdisconnected">Go\'ay</string> 
+<string name="isdisconnected">Go\'ay</string>
 <string name="phone">telefoonka</string>
  <string name="watch">daawo</string>
 <string name="directsensor">Dareemaha tooska ah-</string>
@@ -2178,4 +2178,61 @@ Marka la cadaadiyo OK waxay dhalin doontaa xidhiidh teleefankan oo waxa ay soo b
     <string name="sensor_display_select">Dooro dareemaha muujinta</string>
     <string name="sensor_display_selected">Muujinta dareemaha ayaa la doortay</string>
     <string name="wrongcode">Koodhka QR ee khaldan</string>
+
+    <!-- PR feature translations: trend, alerts, palette, and expiry. -->
+    <string name="alert_falling_fast">Degdeg u dhacaya</string>
+    <string name="alert_rising_fast">Dhaqso u kaca</string>
+    <string name="broadcast_computed_trend_desc">U dir isbeddelka 20-daqiiqo ee abka sida qiimaha dhammaan wax soo saarka halkii aad ka ahaan lahayd qiyaasta dareemayaasha. Fallaadhaha qaataha ayaa markaa ku habboon abkan.</string>
+    <string name="broadcast_computed_trend_title">Baahinta isbeddelka la xisaabiyay</string>
+    <string name="dashboard_show_delta_desc">Isbeddel lagu cabbiray inta u dhexaysa delta, ka hooseeya fallaadha isbeddelka</string>
+    <string name="dashboard_show_delta_title">Delta (Δ) ee dashboard-ka</string>
+    <string name="delta_alarm_interval_follow">Sida akhrinta Δ (hadda %1$d daq)</string>
+    <string name="delta_alarm_interval_label">Daaqadda Delta</string>
+    <string name="delta_border_above_label">Alaarmiga kaliya ee ka sarreeya</string>
+    <string name="delta_border_below_label">Digniin kaliya hoos</string>
+    <string name="delta_change_label">Beddel halkii daqiiqo %1$d</string>
+    <string name="delta_count_label">Akhrinta oo isku xigta</string>
+    <string name="delta_early_trigger_desc">Sidoo kale dab isla marka wadarta fogaanta (%1$s %2$s) la daboolo, iyada oo aan loo eegin inta u dhaxe ee dhaaftay</string>
+    <string name="delta_early_trigger_label">Kicin hore</string>
+    <string name="delta_interval_1min">1 daq</string>
+    <string name="delta_interval_5min">5 daqiiqo</string>
+    <string name="delta_interval_desc">Daaqadda waqtiga ee akhrinta Δ; Qaylodhaanta soo dhacaysa/ kor u kacaysa way raacdaa haddii aan la siin daaqadooda</string>
+    <string name="delta_interval_title">Delta (Δ) inta u dhaxaysa</string>
+    <string name="falling_fast_explanation">Ka digaya ka dib %1$d isku xigta %2$d-daqiiqo u dhaxe mid kastaa hoos ugu dhacaya ugu yaraan %3$s (≈ %4$d daqadda dhicis joogta ah) halka qiimuhu uu joogo ama ka hooseeyo %5$s. Ma jirto saadaal, kaliya isbeddelka cayriin.</string>
+    <string name="glucose_palette_band_high">Sare</string>
+    <string name="glucose_palette_band_in_range">Kala duwanaanshaha</string>
+    <string name="glucose_palette_band_low">Hoose</string>
+    <string name="glucose_palette_band_very_high">Aad u sarreeya</string>
+    <string name="glucose_palette_band_very_low">Aad u hooseeya</string>
+    <string name="glucose_palette_bands_label">Midabada hal-band</string>
+    <string name="glucose_palette_custom_suffix">+ hagaajinta</string>
+    <string name="glucose_palette_edit">Wax ka beddel</string>
+    <string name="glucose_palette_edit_title">Midabada gulukooska</string>
+    <string name="glucose_palette_preset_custom">Caadiyan</string>
+    <string name="glucose_palette_preset_gdh">GDH u eg</string>
+    <string name="glucose_palette_preset_label">Horay loo dhigay</string>
+    <string name="glucose_palette_preset_muted">la aamusay</string>
+    <string name="glucose_palette_preset_vibrant">Firfircoon</string>
+    <string name="glucose_palette_reset">Dib u dajin</string>
+    <string name="glucose_palette_reset_all">Dib u habeyn dhammaan midabada</string>
+    <string name="glucose_palette_title">palette midabka gulukoosta</string>
+    <string name="notification_show_delta_desc">Isbeddel lagu qiyaasay inta u dhexaysa delta, ee ku xigta falaarta</string>
+    <string name="notification_show_delta_title">Muuji delta (Δ)</string>
+    <string name="rising_fast_explanation">Ka digaya ka dib %1$d isku xigta ee %2$d-daqiiqo mid walba wuxuu kor u kacayaa ugu yaraan %3$s (≈ %4$d daqiqo koror joogta ah) halka qiimuhu uu joogo ama ka sarreeyo %5$s. Ma jirto saadaal, kaliya isbeddelka cayriin.</string>
+    <string name="sensor_expiry_group_days">Maalmo</string>
+    <string name="sensor_expiry_group_hours">Saacadaha</string>
+    <string name="sensor_expiry_warnings_desc">Waqti kasta oo la doortay wuxuu ka digayaa hal mar dareeme kasta</string>
+    <string name="sensor_expiry_warnings_title">Ka dig inta aanu dhicin</string>
+    <string name="sound_delay_desc">Gariir marka hore; ku dar alaarmiga la maqli karo oo kaliya daahitaanka ka dib</string>
+    <string name="sound_delay_hypo_warning">Digniin: tani waxay dib u dhigaysaa digniinta la maqli karo ee digniinta gulukooska hoose.</string>
+    <string name="sound_delay_label">Daahitaanka dhawaqa</string>
+    <string name="sound_delay_title">Dib u dhig codka alaarmiga</string>
+    <plurals name="sensor_expires_in_days">
+        <item quantity="one">Dareemuhu wuxuu dhacaa %d maalinta</item>
+        <item quantity="other">Dareemuhu wuxuu dhacaa %d maalmood</item>
+    </plurals>
+    <plurals name="sensor_expires_in_hours">
+        <item quantity="one">Dareemuhu wuxuu dhacaa saacada %d</item>
+        <item quantity="other">Dareemuhu wuxuu dhacaa saacadaha %d</item>
+    </plurals>
 </resources>

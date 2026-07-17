@@ -2045,4 +2045,61 @@ OK дарснаар энэ утсан дээр холболт үүсч, өөр A
     <string name="nightscout_mode_follow">Дагах</string>
     <string name="nightscout_mode_upload">Илгээх</string>
 
+
+    <!-- PR feature translations: trend, alerts, palette, and expiry. -->
+    <string name="alert_falling_fast">Хурдан унах</string>
+    <string name="alert_rising_fast">Хурдан өсөх</string>
+    <string name="broadcast_computed_trend_desc">Мэдрэгчийн өөрийн тооцооны оронд бүх гаралтын хурдаар програмын 20 минутын трендийг илгээнэ үү. Хүлээн авагчийн сумнууд энэ апп-тай таарна.</string>
+    <string name="broadcast_computed_trend_title">Өргөн нэвтрүүлгийн тооцоолсон чиг хандлага</string>
+    <string name="dashboard_show_delta_desc">Тренд сумны доор дельта интервал дээрх хэмжсэн өөрчлөлт</string>
+    <string name="dashboard_show_delta_title">Хяналтын самбар дээрх Delta (Δ).</string>
+    <string name="delta_alarm_interval_follow">Δ унших дуртай (одоогоор %1$d мин)</string>
+    <string name="delta_alarm_interval_label">Дельта цонх</string>
+    <string name="delta_border_above_label">Зөвхөн дээрх дохиолол</string>
+    <string name="delta_border_below_label">Зөвхөн доор дохиолол</string>
+    <string name="delta_change_label">%1$d минут тутамд өөрчлөх</string>
+    <string name="delta_count_label">Дараалсан уншлага</string>
+    <string name="delta_early_trigger_desc">Мөн нийт зай (%1$s %2$s) өнгөрмэгц хэчнээн завсар өнгөрсөн ч хамаагүй гал гарна.</string>
+    <string name="delta_early_trigger_label">Эрт өдөөгч</string>
+    <string name="delta_interval_1min">1 мин</string>
+    <string name="delta_interval_5min">5 мин</string>
+    <string name="delta_interval_desc">Δ унших цагийн цонх; Өөрийнхөө цонхыг заагаагүй бол унах/өсөх дохиолол үүнийг дагадаг</string>
+    <string name="delta_interval_title">Дельта (Δ) интервал</string>
+    <string name="falling_fast_explanation">%1$d дараалсан %2$d-минутын интервал бүр дор хаяж %3$s (≈ %4$d мин тасралтгүй уналт)-аар буурч, утга %5$s-д буюу түүнээс доош байвал анхааруулна. Урьдчилан таамаглаагүй, зүгээр л түүхий чиг хандлага.</string>
+    <string name="glucose_palette_band_high">Өндөр</string>
+    <string name="glucose_palette_band_in_range">Хүрээнд</string>
+    <string name="glucose_palette_band_low">Бага</string>
+    <string name="glucose_palette_band_very_high">Маш өндөр</string>
+    <string name="glucose_palette_band_very_low">Маш бага</string>
+    <string name="glucose_palette_bands_label">Хамтлаг бүрийн өнгө</string>
+    <string name="glucose_palette_custom_suffix">+ тохируулга</string>
+    <string name="glucose_palette_edit">Засварлах</string>
+    <string name="glucose_palette_edit_title">Глюкозын өнгө</string>
+    <string name="glucose_palette_preset_custom">Захиалгат</string>
+    <string name="glucose_palette_preset_gdh">GDH шиг</string>
+    <string name="glucose_palette_preset_label">Урьдчилан тохируулсан</string>
+    <string name="glucose_palette_preset_muted">Дууг хаасан</string>
+    <string name="glucose_palette_preset_vibrant">Эрч хүчтэй</string>
+    <string name="glucose_palette_reset">Дахин тохируулах</string>
+    <string name="glucose_palette_reset_all">Бүх өнгийг дахин тохируулна уу</string>
+    <string name="glucose_palette_title">Глюкозын өнгөт палитр</string>
+    <string name="notification_show_delta_desc">Сумны хажууд байрлах гурвалжин интервал дээрх хэмжсэн өөрчлөлт</string>
+    <string name="notification_show_delta_title">Дельта (Δ) харуулах</string>
+    <string name="rising_fast_explanation">%1$d дараалсан %2$d-минутын интервал бүр дор хаяж %3$s (≈ %4$d мин тасралтгүй өсөлт) %5$s буюу түүнээс дээш байх үед анхааруулдаг. Урьдчилан таамаглаагүй, зүгээр л түүхий чиг хандлага.</string>
+    <string name="sensor_expiry_group_days">Өдөр</string>
+    <string name="sensor_expiry_group_hours">Цаг</string>
+    <string name="sensor_expiry_warnings_desc">Сонгосон цаг бүр мэдрэгч бүрт нэг удаа анхааруулдаг</string>
+    <string name="sensor_expiry_warnings_title">Хугацаа дуусахаас өмнө анхааруул</string>
+    <string name="sound_delay_desc">Эхлээд чичиргээ хийх; Зөвхөн саатсаны дараа дуут дохиог нэмнэ үү</string>
+    <string name="sound_delay_hypo_warning">Анхааруулга: Энэ нь глюкоз багатай дохиоллын дуут дохиог хойшлуулдаг.</string>
+    <string name="sound_delay_label">Дууны саатал</string>
+    <string name="sound_delay_title">Сэрүүлгийн дууг хойшлуулах</string>
+    <plurals name="sensor_expires_in_days">
+        <item quantity="one">Мэдрэгчийн хугацаа %d өдрийн дараа дуусна</item>
+        <item quantity="other">Мэдрэгчийн хугацаа %d хоногийн дараа дуусна</item>
+    </plurals>
+    <plurals name="sensor_expires_in_hours">
+        <item quantity="one">Мэдрэгчийн хугацаа %d цагийн дараа дуусна</item>
+        <item quantity="other">Мэдрэгчийн хугацаа %d цагийн дараа дуусна</item>
+    </plurals>
 </resources>
