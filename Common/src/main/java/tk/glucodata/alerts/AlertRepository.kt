@@ -60,6 +60,15 @@ object AlertRepository {
     private fun keyDeltaInterval(type: AlertType) = "alert_${type.id}_deltaInterval"
     private fun keyEarlyTrigger(type: AlertType) = "alert_${type.id}_earlyTrigger"
 
+    // Sound delay ("vibrate first, audio after N seconds")
+    private fun keySoundDelayEnabled(type: AlertType) = "alert_${type.id}_soundDelayEnabled"
+    private fun keySoundDelaySeconds(type: AlertType) = "alert_${type.id}_soundDelay"
+
+    // Cap enforced on every read so a value written by any path (incl. the
+    // apply-to-all bulk edit onto LOW/VERY_LOW) can never exceed the hypo cap.
+    private fun readSoundDelaySeconds(type: AlertType): Int =
+        sanitizeSoundDelaySeconds(type, prefs.getInt(keySoundDelaySeconds(type), 0))
+
     private inline fun <reified T : Enum<T>> parseEnumPref(value: String?, fallback: T): T {
         return value?.let { raw ->
             runCatching { enumValueOf<T>(raw.uppercase()) }.getOrNull()
@@ -198,7 +207,9 @@ object AlertRepository {
             activeEndMinute = prefs.getInt(keyActiveEndMinute(type), -1).takeIf { it >= 0 },
             retryEnabled = prefs.getBoolean(keyRetryEnabled(type), false),
             retryIntervalMinutes = prefs.getInt(keyRetryInterval(type), 5),
-            retryCount = prefs.getInt(keyRetryCount(type), 3)
+            retryCount = prefs.getInt(keyRetryCount(type), 3),
+            soundDelayEnabled = prefs.getBoolean(keySoundDelayEnabled(type), false),
+            soundDelaySeconds = readSoundDelaySeconds(type)
         )
     }
 
@@ -255,7 +266,9 @@ object AlertRepository {
             // Missing/0 = follow the Δ readout's global interval.
             deltaIntervalMinutes = prefs.getInt(keyDeltaInterval(type), 0).takeIf { it > 0 }
                 ?.let { GlucoseDelta.sanitizeIntervalMinutes(it) },
-            earlyTriggerEnabled = prefs.getBoolean(keyEarlyTrigger(type), false)
+            earlyTriggerEnabled = prefs.getBoolean(keyEarlyTrigger(type), false),
+            soundDelayEnabled = prefs.getBoolean(keySoundDelayEnabled(type), false),
+            soundDelaySeconds = readSoundDelaySeconds(type)
         )
     }
 
@@ -308,6 +321,8 @@ object AlertRepository {
             if (config.deltaBorder != null) putFloat(keyDeltaBorder(config.type), config.deltaBorder) else remove(keyDeltaBorder(config.type))
             if (config.deltaIntervalMinutes != null) putInt(keyDeltaInterval(config.type), config.deltaIntervalMinutes) else remove(keyDeltaInterval(config.type))
             putBoolean(keyEarlyTrigger(config.type), config.earlyTriggerEnabled)
+            putBoolean(keySoundDelayEnabled(config.type), config.soundDelayEnabled)
+            putInt(keySoundDelaySeconds(config.type), sanitizeSoundDelaySeconds(config.type, config.soundDelaySeconds))
         }
     }
     
