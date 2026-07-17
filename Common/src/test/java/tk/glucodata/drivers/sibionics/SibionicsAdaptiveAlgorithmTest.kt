@@ -3,6 +3,7 @@ package tk.glucodata.drivers.sibionics
 import kotlin.math.abs
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -402,6 +403,68 @@ class SibionicsAdaptiveAlgorithmTest {
             vendorStockMmol = 7.3f,
         )
         assertEquals(expected, actual, 0.001f)
+    }
+
+    @Test
+    fun discardedLegacyStateIsNotReportedAsRestored() {
+        val original = SibionicsAdaptiveAlgorithmContext().apply { configure(1.4f) }
+        original.process(
+            6f, 6f, 34f, 2_900f, 120, 120 * 60_000L, emptyList(),
+            chemicalMmol = 6f,
+            vendorStockMmol = 6f,
+        )
+        val incompatible = original.snapshot().also { bytes ->
+            java.nio.ByteBuffer.wrap(bytes, Int.SIZE_BYTES, Int.SIZE_BYTES)
+                .putInt(4)
+        }
+
+        val restored = SibionicsAdaptiveAlgorithmContext().apply { configure(1.4f) }
+        assertFalse(restored.restore(incompatible))
+        assertEquals(null, restored.continuationIndex())
+    }
+
+    @Test
+    fun wrapperSnapshotsRequireExactCustomContinuationIndex() {
+        val selections = listOf(
+            SibionicsAlgorithmSelection.STATE_MODEL_CALIBRATED,
+            SibionicsAlgorithmSelection.BALANCED_TRACKER_CALIBRATED,
+            SibionicsAlgorithmSelection.RESPONSIVE_ESTIMATOR_CALIBRATED,
+        )
+        selections.forEach { selection ->
+            val context = SibionicsAlgorithmContext("continuation-${selection.storageId}").apply {
+                configure(
+                    "46HU804EBJ4",
+                    1.4f,
+                    SibionicsConstants.Variant.CHINESE,
+                    selection,
+                )
+            }
+            repeat(140) { offset ->
+                val index = offset + 1
+                context.process(
+                    rawMmol = 5.5f + (offset % 7) * 0.05f,
+                    temperatureC = 34f,
+                    index = index,
+                    mode = SibionicsAlgorithmMode.LIVE,
+                    impedance = 2_900f,
+                    eventTimeMs = index * 60_000L,
+                )
+            }
+
+            val restored = SibionicsAlgorithmContext("restored-${selection.storageId}").apply {
+                configure(
+                    "46HU804EBJ4",
+                    1.4f,
+                    SibionicsConstants.Variant.CHINESE,
+                    selection,
+                )
+            }
+            assertTrue(restored.restore(context.snapshot()))
+            assertEquals(140, restored.customContinuationIndex())
+            assertTrue(restored.hasExactContinuation(141))
+            assertFalse(restored.hasExactContinuation(140))
+            assertFalse(restored.hasExactContinuation(142))
+        }
     }
 
     @Test

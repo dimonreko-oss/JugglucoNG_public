@@ -200,11 +200,14 @@ class SibionicsBleManager(
         }
         lastIndex = SibionicsRegistry.loadLastIndex(context, SerialNumber)
         val algorithmState = SibionicsRegistry.loadAlgorithmState(context, SerialNumber)
-        if (algorithmState != null && synchronized(algorithmLock) { algorithm.restore(algorithmState) }) {
+        val restoredAlgorithm = algorithmState != null && synchronized(algorithmLock) {
+            algorithm.restore(algorithmState) && algorithm.hasExactContinuation(lastIndex)
+        }
+        if (restoredAlgorithm) {
             lastLiveAlgorithmIndexSeen = lastIndex - 1
             Log.i(SibionicsConstants.TAG, "restored exact algorithm state idx=$lastIndex")
         } else if (lastIndex > 1) {
-            beginAlgorithmRehydration(lastIndex, "no usable saved state")
+            beginAlgorithmRehydration(lastIndex, "no usable or index-aligned saved state")
         }
         startTimeMs = SibionicsRegistry.loadStartTimeMs(context, SerialNumber)
         val (time, glucose, raw) = SibionicsRegistry.loadLastReading(context, SerialNumber)
