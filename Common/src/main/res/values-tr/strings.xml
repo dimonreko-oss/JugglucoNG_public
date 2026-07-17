@@ -1357,8 +1357,8 @@ Tamam\'a basmak bağlantı için QR kod görüntüleyecektir. QR kodu diğer tel
     <string name="sibionics_ble_selected">Seçilen: %1$s</string>
     <string name="sibionics_use_fake_qr_from_ble">Bu BLE adından sahte QR bilgisi kullan</string>
     <string name="sibionics_use_ble_device">Bu Bluetooth cihazını kullan</string>
-    <string name="sibionics_managed_driver_title">Lib içermeyen yönetilen sürücü</string>
-    <string name="sibionics_managed_driver_desc">Eski yerel Sibionics kitaplığı yerine Kotlin BLE/protokol sürücüsünü kullanır. Deneyseldir; bu sensör eski modda zaten çalışıyorsa kapalı bırakın.</string>
+    <string name="sibionics_legacy_driver_title">Eski sürücü</string>
+    <string name="sibionics_legacy_driver_desc">Kotlin sürücüsü yerine özel yerel Sibionics kitaplığını kullanır. Yalnızca uyumluluk seçeneği olarak etkinleştirin.</string>
     <string name="sibionics_managed_sensor_added">Yönetilen Sibionics sensörü eklendi: %1$s</string>
     <string name="wear_transport">Wear transport</string>
     <string name="wear_transport_desc">Configure Wear OS data transport and sync state.</string>

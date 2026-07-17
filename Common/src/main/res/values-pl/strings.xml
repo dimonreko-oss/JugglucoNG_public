@@ -1364,8 +1364,8 @@
     <string name="sibionics_ble_selected">Wybrano: %1$s</string>
     <string name="sibionics_use_fake_qr_from_ble">Użyj fałszywych danych QR z tej nazwy BLE</string>
     <string name="sibionics_use_ble_device">Użyj tego urządzenia Bluetooth</string>
-    <string name="sibionics_managed_driver_title">Zarządzany sterownik bez lib</string>
-    <string name="sibionics_managed_driver_desc">Użyj sterownika Kotlin BLE/protokołu zamiast starej natywnej biblioteki Sibionics. Eksperymentalne; zostaw wyłączone, jeśli ten sensor już działa w trybie legacy.</string>
+    <string name="sibionics_legacy_driver_title">Starszy sterownik</string>
+    <string name="sibionics_legacy_driver_desc">Używa zastrzeżonej natywnej biblioteki Sibionics zamiast sterownika Kotlin. Włączaj tylko jako opcję zgodności.</string>
     <string name="sibionics_managed_sensor_added">Dodano zarządzany sensor Sibionics: %1$s</string>
     <string name="wear_transport">Wear transport</string>
     <string name="wear_transport_desc">Configure Wear OS data transport and sync state.</string>
