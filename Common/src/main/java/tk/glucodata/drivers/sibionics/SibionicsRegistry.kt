@@ -28,6 +28,9 @@ object SibionicsRegistry {
     private const val PREF_LAST_READING_TIME_PREFIX = "sibionics_managed_last_reading_time_"
     private const val PREF_ALGORITHM_STATE_PREFIX = "sibionics_managed_algorithm_state_"
     private const val PREF_AUTO_RESET_DAYS_PREFIX = "sibionics_managed_auto_reset_days_"
+    private const val PREF_RESET_POSTPONED_UNTIL_PREFIX = "sibionics_managed_reset_postponed_until_"
+    private const val PREF_RESET_REMINDER_AT_PREFIX = "sibionics_managed_reset_reminder_at_"
+    private const val PREF_RESET_REQUESTED_PREFIX = "sibionics_managed_reset_requested_"
     private const val PREF_CUSTOM_ALGORITHM_PREFIX = "sibionics_managed_custom_algorithm_"
     private const val PREF_ALGORITHM_SELECTION_PREFIX = "sibionics_managed_algorithm_selection_"
     private const val PREF_LOCAL_REBUILD_FINGERPRINT_PREFIX = "sibionics_managed_rebuild_fingerprint_"
@@ -243,6 +246,9 @@ object SibionicsRegistry {
             remove(PREF_LAST_READING_TIME_PREFIX + id)
             remove(PREF_ALGORITHM_STATE_PREFIX + id)
             remove(PREF_AUTO_RESET_DAYS_PREFIX + id)
+            remove(PREF_RESET_POSTPONED_UNTIL_PREFIX + id)
+            remove(PREF_RESET_REMINDER_AT_PREFIX + id)
+            remove(PREF_RESET_REQUESTED_PREFIX + id)
             remove(PREF_CUSTOM_ALGORITHM_PREFIX + id)
             remove(PREF_ALGORITHM_SELECTION_PREFIX + id)
             remove(PREF_LOCAL_REBUILD_FINGERPRINT_PREFIX + id)
@@ -290,10 +296,46 @@ object SibionicsRegistry {
     fun loadAutoResetDays(context: Context, sensorId: String): Int =
         prefs(context).getInt(PREF_AUTO_RESET_DAYS_PREFIX + sensorId, 300)
 
+    fun hasAutoResetSetting(context: Context, sensorId: String): Boolean =
+        prefs(context).contains(PREF_AUTO_RESET_DAYS_PREFIX + sensorId)
+
     fun saveAutoResetDays(context: Context, sensorId: String, days: Int) {
         prefs(context).edit()
             .putInt(PREF_AUTO_RESET_DAYS_PREFIX + sensorId, days.coerceIn(1, 300))
             .apply()
+    }
+
+    fun loadResetPostponedUntilMs(context: Context, sensorId: String): Long =
+        prefs(context).getLong(PREF_RESET_POSTPONED_UNTIL_PREFIX + sensorId, 0L)
+
+    fun postponeReset(context: Context, sensorId: String, untilMs: Long) {
+        prefs(context).edit()
+            .putLong(PREF_RESET_POSTPONED_UNTIL_PREFIX + sensorId, untilMs.coerceAtLeast(0L))
+            .apply()
+    }
+
+    fun loadResetReminderAtMs(context: Context, sensorId: String): Long =
+        prefs(context).getLong(PREF_RESET_REMINDER_AT_PREFIX + sensorId, 0L)
+
+    fun markResetReminderShown(context: Context, sensorId: String, nowMs: Long) {
+        prefs(context).edit()
+            .putLong(PREF_RESET_REMINDER_AT_PREFIX + sensorId, nowMs.coerceAtLeast(0L))
+            .apply()
+    }
+
+    fun requestReset(context: Context, sensorId: String) {
+        prefs(context).edit().putBoolean(PREF_RESET_REQUESTED_PREFIX + sensorId, true).apply()
+    }
+
+    fun isResetRequested(context: Context, sensorId: String): Boolean =
+        prefs(context).getBoolean(PREF_RESET_REQUESTED_PREFIX + sensorId, false)
+
+    fun clearResetMaintenanceState(context: Context, sensorId: String) {
+        prefs(context).edit().apply {
+            remove(PREF_RESET_POSTPONED_UNTIL_PREFIX + sensorId)
+            remove(PREF_RESET_REMINDER_AT_PREFIX + sensorId)
+            remove(PREF_RESET_REQUESTED_PREFIX + sensorId)
+        }.apply()
     }
 
     fun loadCustomAlgorithmEnabled(context: Context, sensorId: String): Boolean =

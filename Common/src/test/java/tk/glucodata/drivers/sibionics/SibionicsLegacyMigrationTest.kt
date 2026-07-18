@@ -24,7 +24,7 @@ class SibionicsLegacyMigrationTest {
         assertEquals("E0:63:0D:82:9C:9E", candidate.address)
         assertEquals("0683013A", candidate.shortCode)
         assertEquals("P225043JMV", candidate.bleName)
-        assertEquals(21, candidate.autoResetDays)
+        assertEquals(22, candidate.autoResetDays)
         assertEquals(SibionicsConstants.ProtocolMode.V120, candidate.protocolMode)
     }
 

@@ -52,9 +52,10 @@ object SibionicsLegacyMigration {
         val normalizedBleName = SibionicsConstants.normalizeBleName(bleName)
             .takeIf { it.length in 8..16 }
         val normalizedAutoResetDays = when {
-            autoResetDays in 1..300 -> autoResetDays
-            variant == SibionicsConstants.Variant.SIBIONICS2 -> 21
-            else -> 300
+            variant != SibionicsConstants.Variant.SIBIONICS2 -> SibionicsResetPolicy.DISABLED_DAYS
+            autoResetDays in 1 until SibionicsResetPolicy.DISABLED_DAYS -> SibionicsResetPolicy.ENABLED_DAYS
+            autoResetDays == SibionicsResetPolicy.DISABLED_DAYS -> SibionicsResetPolicy.DISABLED_DAYS
+            else -> SibionicsResetPolicy.ENABLED_DAYS
         }
         return Candidate(
             nativeName = name,

@@ -443,7 +443,7 @@
     <string name="auto_calibration_mode">Algoritmo do sensor</string>
     <string name="sibionics_custom_algorithm">Modelo adaptativo do sensor (experimental)</string>
     <string name="sibionics_custom_algorithm_desc">Compensação da deriva do sensor, atraso fisiológico e artefactos</string>
-    <string name="sibionics_stock_algorithm_desc">Modelo padrão do sensor</string>
+    <string name="sibionics_stock_algorithm_desc">Sibionics predefinido</string>
     <string name="sibionics_stock_algorithm_detail">Usar calibrações do medidor dentro do algoritmo do sensor</string>
     <string name="sibionics_restart_algorithm_desc">Reconstruir o estado minuto a minuto a partir do histórico guardado</string>
     <string name="juggluco_native">Nativ. Juggluco</string>
@@ -1943,10 +1943,16 @@ Pressing OK will generate a connection on this phone and display a QR code that 
     <string name="ottai_credentials_replace">Substituir</string>
     <string name="sibionics_glucose_model">Modelo de glicose</string>
     <string name="sibionics_stock_model_detail">Algoritmo exato do sensor Sibionics</string>
-    <string name="sibionics_responsive_algorithm">Estimador responsivo</string>
+    <string name="sibionics_responsive_algorithm">Resposta rápida</string>
     <string name="sibionics_responsive_algorithm_desc">Estimador original de glicose e velocidade orientado pela tendência</string>
-    <string name="sibionics_balanced_algorithm">Rastreador equilibrado</string>
+    <string name="sibionics_balanced_algorithm">Suavização leve</string>
     <string name="sibionics_balanced_algorithm_desc">Redução limitada de ruído próxima do modelo padrão</string>
-    <string name="sibionics_state_algorithm">Modelo de estado químico</string>
+    <string name="sibionics_state_algorithm">Correção adaptativa</string>
     <string name="sibionics_state_algorithm_desc">Compensação da deriva do sensor, atraso fisiológico e artefactos</string>
+    <string name="sibionics_auto_reset_22_desc">Reposição perto do 22.º dia, de preferência com glicose mais estável. Antes de expirar, ocorre uma reposição de segurança mesmo com esta opção desligada.</string>
+    <string name="sibionics_reset_reminder_title">A reposição do Sibionics 2 aproxima-se</string>
+    <string name="sibionics_reset_reminder_text">O sensor atingirá o momento de reposição dentro de cerca de %1$d horas. Reponha-o a tempo para o manter ativo.</string>
+    <string name="sibionics_reset_postpone">Adiar 2 horas</string>
+    <string name="sibionics_reset_reminder_channel">Lembretes de reposição Sibionics</string>
+    <string name="sibionics_reset_reminder_channel_desc">Lembretes e ações para repor o Sibionics 2 antes de expirar</string>
 </resources>

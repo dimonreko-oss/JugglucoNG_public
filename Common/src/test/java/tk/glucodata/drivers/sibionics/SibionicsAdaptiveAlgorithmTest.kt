@@ -481,17 +481,36 @@ class SibionicsAdaptiveAlgorithmTest {
 
     @Test
     fun gs1ResetUsesObservedFf32Payload() {
+        val expected = byteArrayOf(0x24, 0xE7.toByte(), 0x6F, 0x34)
         assertArrayEquals(
-            byteArrayOf(0x24, 0xE7.toByte(), 0x6F, 0x34),
+            expected,
             SibionicsProtocol.buildGs1ResetPacket(),
+        )
+        assertArrayEquals(
+            expected,
+            SibionicsProtocol.buildMaintenanceResetPacket(SibionicsConstants.Variant.EU),
+        )
+        assertArrayEquals(
+            expected,
+            SibionicsProtocol.buildMaintenanceResetPacket(SibionicsConstants.Variant.HEMATONIX),
         )
     }
 
     @Test
     fun chineseResetUsesObservedAa55Payload() {
+        val expected = byteArrayOf(0xAA.toByte(), 0x55, 0x10, 0xF1.toByte())
+        assertArrayEquals(expected, SibionicsProtocol.buildChineseResetPacket())
         assertArrayEquals(
-            byteArrayOf(0xAA.toByte(), 0x55, 0x10, 0xF1.toByte()),
-            SibionicsProtocol.buildChineseResetPacket(),
+            expected,
+            SibionicsProtocol.buildMaintenanceResetPacket(SibionicsConstants.Variant.CHINESE),
+        )
+    }
+
+    @Test
+    fun sibionics2ResetKeepsEncryptedV120Command() {
+        assertArrayEquals(
+            SibionicsProtocol.buildResetPacket(0),
+            SibionicsProtocol.buildMaintenanceResetPacket(SibionicsConstants.Variant.SIBIONICS2),
         )
     }
 

@@ -619,7 +619,7 @@
     <string name="auto_calibration_mode">Algorytm sensora</string>
     <string name="sibionics_custom_algorithm">Adaptacyjny model sensora (eksperymentalny)</string>
     <string name="sibionics_custom_algorithm_desc">Kompensacja dryfu sensora, opóźnienia fizjologicznego i artefaktów</string>
-    <string name="sibionics_stock_algorithm_desc">Standardowy model sensora</string>
+    <string name="sibionics_stock_algorithm_desc">Domyślny Sibionics</string>
     <string name="sibionics_stock_algorithm_detail">Używaj kalibracji wewnątrz algorytmu sensora</string>
     <string name="sibionics_restart_algorithm_desc">Odtwórz stan minutowego algorytmu z zapisanej historii sensora</string>
     <string name="juggluco_native">Natywny Juggluco</string>
@@ -1977,10 +1977,16 @@
     <string name="ottai_credentials_replace">Zastąp</string>
     <string name="sibionics_glucose_model">Model glukozy</string>
     <string name="sibionics_stock_model_detail">Dokładny algorytm sensora Sibionics</string>
-    <string name="sibionics_responsive_algorithm">Szybki estymator</string>
+    <string name="sibionics_responsive_algorithm">Szybka reakcja</string>
     <string name="sibionics_responsive_algorithm_desc">Pierwotny estymator glukozy i szybkości oparty na trendzie</string>
-    <string name="sibionics_balanced_algorithm">Zrównoważone śledzenie</string>
+    <string name="sibionics_balanced_algorithm">Lekkie wygładzanie</string>
     <string name="sibionics_balanced_algorithm_desc">Ograniczona redukcja szumu blisko modelu standardowego</string>
-    <string name="sibionics_state_algorithm">Chemiczny model stanu</string>
+    <string name="sibionics_state_algorithm">Korekcja adaptacyjna</string>
     <string name="sibionics_state_algorithm_desc">Kompensacja dryfu sensora, opóźnienia fizjologicznego i artefaktów</string>
+    <string name="sibionics_auto_reset_22_desc">Reset około 22. dnia, najlepiej przy stabilniejszej glukozie. Przed wygaśnięciem reset bezpieczeństwa nastąpi nawet po wyłączeniu tej opcji.</string>
+    <string name="sibionics_reset_reminder_title">Zbliża się reset Sibionics 2</string>
+    <string name="sibionics_reset_reminder_text">Sensor osiągnie moment resetu za około %1$d godz. Zresetuj go na czas, aby działał dalej.</string>
+    <string name="sibionics_reset_postpone">Odłóż o 2 godziny</string>
+    <string name="sibionics_reset_reminder_channel">Przypomnienia o resecie Sibionics</string>
+    <string name="sibionics_reset_reminder_channel_desc">Przypomnienia i działania do resetowania Sibionics 2 przed wygaśnięciem</string>
 </resources>

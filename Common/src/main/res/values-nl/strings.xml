@@ -621,7 +621,7 @@ Als je op OK drukt, wordt er een verbinding gemaakt op deze telefoon en wordt er
     <string name="auto_calibration_mode">Sensoralgoritme</string>
     <string name="sibionics_custom_algorithm">Adaptief sensormodel (experimenteel)</string>
     <string name="sibionics_custom_algorithm_desc">Compensatie van sensordrift, fysiologische vertraging en artefacten</string>
-    <string name="sibionics_stock_algorithm_desc">Standaard sensormodel</string>
+    <string name="sibionics_stock_algorithm_desc">Sibionics-standaard</string>
     <string name="sibionics_stock_algorithm_detail">Meterkalibraties binnen het sensoralgoritme gebruiken</string>
     <string name="sibionics_restart_algorithm_desc">Bouw de minuutstatus opnieuw op uit de opgeslagen sensorgeschiedenis</string>
     <string name="juggluco_native">Juggluco natief</string>
@@ -1985,10 +1985,16 @@ Als je op OK drukt, wordt er een verbinding gemaakt op deze telefoon en wordt er
     <string name="ottai_credentials_replace">Vervangen</string>
     <string name="sibionics_glucose_model">Glucosemodel</string>
     <string name="sibionics_stock_model_detail">Exact Sibionics-sensoralgoritme</string>
-    <string name="sibionics_responsive_algorithm">Responsieve schatter</string>
+    <string name="sibionics_responsive_algorithm">Snelle respons</string>
     <string name="sibionics_responsive_algorithm_desc">Oorspronkelijke trendgestuurde schatter van glucose en snelheid</string>
-    <string name="sibionics_balanced_algorithm">Gebalanceerde tracker</string>
+    <string name="sibionics_balanced_algorithm">Lichte afvlakking</string>
     <string name="sibionics_balanced_algorithm_desc">Begrensde ruisonderdrukking dicht bij het standaardmodel</string>
-    <string name="sibionics_state_algorithm">Chemisch toestandsmodel</string>
+    <string name="sibionics_state_algorithm">Adaptieve correctie</string>
     <string name="sibionics_state_algorithm_desc">Compensatie van sensordrift, fysiologische vertraging en artefacten</string>
+    <string name="sibionics_auto_reset_22_desc">Reset rond dag 22, bij voorkeur tijdens stabielere glucose. Vóór het verlopen volgt altijd een veiligheidsreset, ook als dit uitstaat.</string>
+    <string name="sibionics_reset_reminder_title">Reset van Sibionics 2 komt eraan</string>
+    <string name="sibionics_reset_reminder_text">De sensor bereikt over ongeveer %1$d uur het resetmoment. Reset hem op tijd om hem actief te houden.</string>
+    <string name="sibionics_reset_postpone">2 uur uitstellen</string>
+    <string name="sibionics_reset_reminder_channel">Sibionics-resetherinneringen</string>
+    <string name="sibionics_reset_reminder_channel_desc">Herinneringen en acties om Sibionics 2 vóór afloop te resetten</string>
 </resources>

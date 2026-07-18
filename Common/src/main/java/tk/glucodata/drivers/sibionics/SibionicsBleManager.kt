@@ -83,6 +83,7 @@ class SibionicsBleManager(
         private const val ALGORITHM_REBUILD_DEBOUNCE_MS = 600L
         private const val LOCAL_REBUILD_FORMAT_VERSION = 6
         private const val POST_RESET_DISCARD_TIMEOUT_MS = 15_000L
+        private const val RESET_COMFORT_RECHECK_MS = 15L * 60L * 1000L
 
         private fun sampleJournalFile(context: Context, sensorId: String): File {
             val digest = MessageDigest.getInstance("SHA-256")
@@ -156,6 +157,7 @@ class SibionicsBleManager(
             rebuildExecutor.execute { rebuildAlgorithmLocally(generation) }
         }
     }
+    private val resetMaintenanceRunnable = Runnable { maybeScheduleAutoReset() }
 
     @Volatile private var viewModeValue: Int = ManagedSensorViewModeStore.read(Applic.app, serial, 0)
 
@@ -183,7 +185,18 @@ class SibionicsBleManager(
         )
         shortCode = SibionicsRegistry.loadShortCode(context, SerialNumber)
         sensitivity = SibionicsSensitivity.sensitivityFor(shortCode)
-        autoResetDays = SibionicsRegistry.loadAutoResetDays(context, SerialNumber)
+        val persistedAutoResetDays = SibionicsRegistry.loadAutoResetDays(context, SerialNumber)
+        autoResetDays = SibionicsResetPolicy.normalizedDays(
+            variant = variant,
+            persistedDays = persistedAutoResetDays,
+            hasPersistedSetting = SibionicsRegistry.hasAutoResetSetting(context, SerialNumber),
+        )
+        if (autoResetDays != persistedAutoResetDays ||
+            !SibionicsRegistry.hasAutoResetSetting(context, SerialNumber)
+        ) {
+            SibionicsRegistry.saveAutoResetDays(context, SerialNumber, autoResetDays)
+        }
+        pendingResetCommand = SibionicsRegistry.isResetRequested(context, SerialNumber)
         algorithmSelection = SibionicsRegistry.loadAlgorithmSelection(context, SerialNumber)
         SibionicsRegistry.loadIntegratedCalibrationBaseline(context, SerialNumber)
             ?.takeIf { it.unit == Applic.unit }
@@ -210,6 +223,7 @@ class SibionicsBleManager(
             beginAlgorithmRehydration(lastIndex, "no usable or index-aligned saved state")
         }
         startTimeMs = SibionicsRegistry.loadStartTimeMs(context, SerialNumber)
+        scheduleResetMaintenanceCheck()
         val (time, glucose, raw) = SibionicsRegistry.loadLastReading(context, SerialNumber)
         latestReadingTimeMs = time
         latestGlucoseMgdl = glucose
@@ -477,7 +491,10 @@ class SibionicsBleManager(
         if (descriptor.characteristic?.uuid == SibionicsConstants.CHAR_NOTIFY_FF31) {
             if (pendingResetCommand) {
                 pendingResetCommand = false
-                writeResetCommand("pending")
+                if (!writeResetCommand("pending")) {
+                    pendingResetCommand = true
+                    scheduleReconnect("pending reset write failed")
+                }
                 return
             }
             startProtocolProbe()
@@ -923,6 +940,7 @@ class SibionicsBleManager(
         if (startTimeMs <= 0L && index >= 0) {
             startTimeMs = eventMs - index * SibionicsConstants.READING_INTERVAL_MS
             Applic.app?.let { SibionicsRegistry.saveStartTimeMs(it, SerialNumber, startTimeMs) }
+            scheduleResetMaintenanceCheck()
         }
         val displayMmol = synchronized(algorithmLock) {
             if (index <= 1) algorithm.reset()
@@ -1098,6 +1116,8 @@ class SibionicsBleManager(
                 } ?: Float.NaN
                 if (startTimeMs <= 0L) {
                     startTimeMs = last.sampleMs - last.index * SibionicsConstants.READING_INTERVAL_MS
+                    Applic.app?.let { SibionicsRegistry.saveStartTimeMs(it, SerialNumber, startTimeMs) }
+                    scheduleResetMaintenanceCheck()
                 }
                 lastIndexDirty = false
                 algorithmStateDirty = false
@@ -1281,6 +1301,8 @@ class SibionicsBleManager(
         latestRawMgdl = Float.NaN
         Applic.app?.let { context ->
             SibionicsRegistry.clearStartTimeMs(context, SerialNumber)
+            SibionicsRegistry.clearResetMaintenanceState(context, SerialNumber)
+            SibionicsResetReminder.cancel(context, SerialNumber)
             HistorySyncAccess.markSensorReset(SerialNumber)
         }
     }
@@ -1458,6 +1480,7 @@ class SibionicsBleManager(
         if (opCode == 0x10 || opCode == 0) resetSensor() else false
 
     override fun resetSensor(): Boolean {
+        Applic.app?.let { SibionicsRegistry.requestReset(it, SerialNumber) }
         pendingResetCommand = false
         val ok = writeResetCommand("user")
         if (ok) {
@@ -1470,19 +1493,14 @@ class SibionicsBleManager(
     }
 
     private fun writeResetCommand(reason: String): Boolean {
-        val packet = when {
-            protocolMode == SibionicsConstants.ProtocolMode.CHINESE ->
-                SibionicsProtocol.buildChineseResetPacket()
-            variant.legacySubtype <= SibionicsConstants.Variant.CHINESE.legacySubtype ->
-                SibionicsProtocol.buildGs1ResetPacket()
-            else -> SibionicsProtocol.buildResetPacket(0)
-        }
+        val packet = SibionicsProtocol.buildMaintenanceResetPacket(variant)
         val ok = writeCommand(packet, "reset-$reason")
         if (ok) markResetSent()
         return ok
     }
 
     private fun markResetSent() {
+        handler.removeCallbacks(resetMaintenanceRunnable)
         discardNotificationsUntilResetDisconnect = true
         loggedDiscardedPostResetNotification = false
         handler.removeCallbacks(postResetDiscardTimeoutRunnable)
@@ -1510,6 +1528,8 @@ class SibionicsBleManager(
             val snapshot = synchronized(algorithmLock) { algorithm.snapshot() }
             SibionicsRegistry.saveAlgorithmCheckpoint(it, SerialNumber, lastIndex, snapshot)
             SibionicsRegistry.clearStartTimeMs(it, SerialNumber)
+            SibionicsRegistry.clearResetMaintenanceState(it, SerialNumber)
+            SibionicsResetReminder.cancel(it, SerialNumber)
             HistorySyncAccess.markSensorReset(SerialNumber)
         }
         lastIndexDirty = false
@@ -1534,14 +1554,21 @@ class SibionicsBleManager(
 
     override fun supportsClearCalibrationAction(): Boolean = false
 
-    override fun supportsAutoReset(): Boolean = true
+    override fun supportsAutoReset(): Boolean =
+        variant == SibionicsConstants.Variant.SIBIONICS2
 
     override fun getAutoResetDays(): Int = autoResetDays
 
     override fun setAutoResetDays(days: Int): Boolean {
-        autoResetDays = days.coerceIn(1, 300)
+        if (!supportsAutoReset()) return false
+        autoResetDays = if (days in 1 until SibionicsResetPolicy.DISABLED_DAYS) {
+            SibionicsResetPolicy.ENABLED_DAYS
+        } else {
+            SibionicsResetPolicy.DISABLED_DAYS
+        }
         autoResetScheduled = false
         Applic.app?.let { SibionicsRegistry.saveAutoResetDays(it, SerialNumber, autoResetDays) }
+        scheduleResetMaintenanceCheck()
         UiRefreshBus.requestStatusRefresh()
         return true
     }
@@ -1580,13 +1607,67 @@ class SibionicsBleManager(
     }
 
     private fun maybeScheduleAutoReset() {
-        val days = autoResetDays
-        if (autoResetScheduled || pendingResetCommand || days !in 1..24 || startTimeMs <= 0L) return
-        val thresholdMs = days * SibionicsConstants.DAY_MS
-        if (System.currentTimeMillis() - startTimeMs < thresholdMs) return
+        if (variant != SibionicsConstants.Variant.SIBIONICS2 ||
+            autoResetScheduled || pendingResetCommand || startTimeMs <= 0L
+        ) return
+        val context = Applic.app ?: return
+        val now = System.currentTimeMillis()
+        val decision = SibionicsResetPolicy.evaluate(
+            nowMs = now,
+            startTimeMs = startTimeMs,
+            autoResetEnabled = autoResetDays == SibionicsResetPolicy.ENABLED_DAYS,
+            postponedUntilMs = SibionicsRegistry.loadResetPostponedUntilMs(context, SerialNumber),
+            lastReminderAtMs = SibionicsRegistry.loadResetReminderAtMs(context, SerialNumber),
+            glucoseMgdl = latestGlucoseMgdl,
+            rateMgdlPerMin = latestRateMgdlPerMin,
+        )
+        if (decision.showReminder) {
+            SibionicsRegistry.markResetReminderShown(context, SerialNumber, now)
+            SibionicsResetReminder.show(
+                context = context,
+                sensorId = SerialNumber,
+                dueAtMs = SibionicsResetPolicy.dueAtMs(startTimeMs),
+                hardDeadlineMs = SibionicsResetPolicy.hardDeadlineMs(startTimeMs),
+                nowMs = now,
+            )
+        }
+        if (!decision.resetNow) {
+            scheduleResetMaintenanceCheck()
+            return
+        }
         autoResetScheduled = true
-        Log.i(SibionicsConstants.TAG, "auto reset due at day=$days serial=$SerialNumber")
+        Log.i(
+            SibionicsConstants.TAG,
+            "auto reset due serial=$SerialNumber forced=${decision.forced} enabled=${autoResetDays == SibionicsResetPolicy.ENABLED_DAYS}",
+        )
         handler.post { resetSensor() }
+    }
+
+    private fun scheduleResetMaintenanceCheck() {
+        handler.removeCallbacks(resetMaintenanceRunnable)
+        if (variant != SibionicsConstants.Variant.SIBIONICS2 ||
+            autoResetScheduled || pendingResetCommand || startTimeMs <= 0L
+        ) return
+        val context = Applic.app ?: return
+        val now = System.currentTimeMillis()
+        val dueAt = SibionicsResetPolicy.dueAtMs(startTimeMs)
+        val hardDeadline = SibionicsResetPolicy.hardDeadlineMs(startTimeMs)
+        val reminderAt = dueAt - SibionicsResetPolicy.REMINDER_LEAD_MS
+        val postponedUntil = SibionicsRegistry.loadResetPostponedUntilMs(context, SerialNumber)
+        val lastReminderAt = SibionicsRegistry.loadResetReminderAtMs(context, SerialNumber)
+        val candidates = buildList {
+            if (reminderAt > now) add(reminderAt)
+            if (dueAt > now) add(dueAt)
+            if (postponedUntil > now) add(postponedUntil)
+            if (lastReminderAt > 0L && lastReminderAt + SibionicsResetPolicy.POSTPONE_MS > now) {
+                add(lastReminderAt + SibionicsResetPolicy.POSTPONE_MS)
+            }
+            if (hardDeadline > now) add(hardDeadline)
+            if (now >= reminderAt && now < hardDeadline) add(now + RESET_COMFORT_RECHECK_MS)
+            if (now >= reminderAt && lastReminderAt <= 0L && postponedUntil <= now) add(now + 1_000L)
+        }
+        val next = candidates.minOrNull() ?: now + 1_000L
+        handler.postDelayed(resetMaintenanceRunnable, (next - now).coerceAtLeast(1_000L))
     }
 
     override fun clearSensorCalibration(): Boolean {

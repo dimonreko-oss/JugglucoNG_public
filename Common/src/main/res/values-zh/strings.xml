@@ -555,7 +555,7 @@
     <string name="auto_calibration_mode">传感器算法</string>
     <string name="sibionics_custom_algorithm">自适应传感器模型（实验性）</string>
     <string name="sibionics_custom_algorithm_desc">补偿传感器漂移、生理延迟和信号伪影</string>
-    <string name="sibionics_stock_algorithm_desc">原厂传感器模型</string>
+    <string name="sibionics_stock_algorithm_desc">Sibionics 默认</string>
     <string name="sibionics_stock_algorithm_detail">在传感器算法内部使用血糖仪校准</string>
     <string name="sibionics_restart_algorithm_desc">从已保存的传感器历史重建每分钟算法状态</string>
     <string name="juggluco_native">Juggluco 原生</string>
@@ -1958,10 +1958,16 @@ Pressing OK will generate a connection on this phone and display a QR code that 
     <string name="ottai_credentials_replace">替换</string>
     <string name="sibionics_glucose_model">葡萄糖模型</string>
     <string name="sibionics_stock_model_detail">精确的 Sibionics 原厂算法</string>
-    <string name="sibionics_responsive_algorithm">快速估算模型</string>
+    <string name="sibionics_responsive_algorithm">快速响应</string>
     <string name="sibionics_responsive_algorithm_desc">原始的趋势感知葡萄糖与变化速度估算模型</string>
-    <string name="sibionics_balanced_algorithm">均衡跟踪模型</string>
+    <string name="sibionics_balanced_algorithm">轻度平滑</string>
     <string name="sibionics_balanced_algorithm_desc">紧随原厂模型的有限降噪</string>
-    <string name="sibionics_state_algorithm">化学状态模型</string>
+    <string name="sibionics_state_algorithm">自适应校正</string>
     <string name="sibionics_state_algorithm_desc">补偿传感器漂移、生理延迟和信号伪影</string>
+    <string name="sibionics_auto_reset_22_desc">接近第 22 天时重置，并优先选择血糖较平稳的时段。即使关闭此项，也会在到期前执行安全重置。</string>
+    <string name="sibionics_reset_reminder_title">Sibionics 2 即将需要重置</string>
+    <string name="sibionics_reset_reminder_text">传感器约在 %1$d 小时后到达重置时间。请及时重置以保持运行。</string>
+    <string name="sibionics_reset_postpone">推迟 2 小时</string>
+    <string name="sibionics_reset_reminder_channel">Sibionics 重置提醒</string>
+    <string name="sibionics_reset_reminder_channel_desc">Sibionics 2 到期前的重置提醒和操作</string>
 </resources>

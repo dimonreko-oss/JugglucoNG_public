@@ -490,7 +490,7 @@
     <string name="auto_calibration_mode">Algorithme du capteur</string>
     <string name="sibionics_custom_algorithm">Modèle adaptatif du capteur (expérimental)</string>
     <string name="sibionics_custom_algorithm_desc">Compensation de la dérive du capteur, du retard physiologique et des artefacts</string>
-    <string name="sibionics_stock_algorithm_desc">Modèle standard du capteur</string>
+    <string name="sibionics_stock_algorithm_desc">Sibionics par défaut</string>
     <string name="sibionics_stock_algorithm_detail">Utiliser les étalonnages du lecteur dans l’algorithme du capteur</string>
     <string name="sibionics_restart_algorithm_desc">Reconstruire l’état minute par minute depuis l’historique du capteur</string>
     <string name="juggluco_native">Juggluco natif</string>
@@ -1948,10 +1948,16 @@ Pressing OK will generate a connection on this phone and display a QR code that 
     <string name="ottai_credentials_replace">Remplacer</string>
     <string name="sibionics_glucose_model">Modèle de glucose</string>
     <string name="sibionics_stock_model_detail">Algorithme exact du capteur Sibionics</string>
-    <string name="sibionics_responsive_algorithm">Estimateur réactif</string>
+    <string name="sibionics_responsive_algorithm">Réponse rapide</string>
     <string name="sibionics_responsive_algorithm_desc">Estimateur original de la glycémie et de sa vitesse</string>
-    <string name="sibionics_balanced_algorithm">Suivi équilibré</string>
+    <string name="sibionics_balanced_algorithm">Lissage léger</string>
     <string name="sibionics_balanced_algorithm_desc">Réduction du bruit limitée, proche du modèle standard</string>
-    <string name="sibionics_state_algorithm">Modèle d’état chimique</string>
+    <string name="sibionics_state_algorithm">Correction adaptative</string>
     <string name="sibionics_state_algorithm_desc">Compensation de la dérive du capteur, du retard physiologique et des artefacts</string>
+    <string name="sibionics_auto_reset_22_desc">Réinitialisation vers le 22e jour, de préférence lorsque la glycémie est plus stable. Une réinitialisation de sécurité a lieu avant expiration même si ce réglage est désactivé.</string>
+    <string name="sibionics_reset_reminder_title">Réinitialisation de Sibionics 2 bientôt requise</string>
+    <string name="sibionics_reset_reminder_text">Le capteur atteindra son point de réinitialisation dans environ %1$d heures. Réinitialisez-le à temps pour le maintenir actif.</string>
+    <string name="sibionics_reset_postpone">Reporter de 2 heures</string>
+    <string name="sibionics_reset_reminder_channel">Rappels de réinitialisation Sibionics</string>
+    <string name="sibionics_reset_reminder_channel_desc">Rappels et actions pour réinitialiser Sibionics 2 avant son expiration</string>
 </resources>
