@@ -1,5 +1,58 @@
 package tk.glucodata.alerts
 
+import tk.glucodata.Natives
+import tk.glucodata.SensorBluetooth
+import tk.glucodata.drivers.ManagedBluetoothSensorDriver
+
+/**
+ * Pick the expiry-relevant sensor end among per-sensor candidates
+ * (serial -> official end, ms). The sensor currently on the display wins;
+ * otherwise the farthest end, since the running sensor outlives finished ones.
+ *
+ * Ends not in the future are rejected: 0 means unknown, a past end means the
+ * sensor is already expired. This also keeps a clamped source out of the latch —
+ * Natives.getendtime() returns the chart's data range end, capped at "now"
+ * while the sensor runs, which made every window look open on every tick and
+ * silenced all expiry warnings.
+ */
+internal fun selectSensorExpiryEndMs(
+    candidates: List<Pair<String?, Long>>,
+    preferredSensorId: String?,
+    nowMs: Long
+): Long {
+    val plausible = candidates.filter { it.second > nowMs }
+    if (plausible.isEmpty()) return 0L
+    if (preferredSensorId != null) {
+        plausible.firstOrNull { it.first == preferredSensorId }?.let { return it.second }
+    }
+    return plausible.maxOf { it.second }
+}
+
+/**
+ * Resolve the official end (start + wear duration) of the relevant sensor from
+ * the live gatt registry. Kotlin-managed drivers without native backing fall
+ * back to their UI snapshot.
+ */
+internal fun resolveSensorExpiryEndMs(preferredSensorId: String?, nowMs: Long): Long {
+    val gatts = try {
+        SensorBluetooth.mygatts()
+    } catch (t: Throwable) {
+        null
+    } ?: return 0L
+    val candidates = gatts.map { gatt ->
+        val nativeEnd = runCatching { Natives.getSensorEndTime(gatt.dataptr, true) }.getOrDefault(0L)
+        val end = if (nativeEnd > 0L) {
+            nativeEnd
+        } else {
+            runCatching {
+                (gatt as? ManagedBluetoothSensorDriver)?.getManagedUiSnapshot()?.officialEndMs ?: 0L
+            }.getOrDefault(0L)
+        }
+        gatt.SerialNumber to end
+    }
+    return selectSensorExpiryEndMs(candidates, preferredSensorId, nowMs)
+}
+
 /**
  * Edge-triggered latch for the sensor-expiry pre-warnings, one latch per
  * configured threshold. Each threshold fires exactly once per sensor when the

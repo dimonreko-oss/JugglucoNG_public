@@ -122,6 +122,29 @@ class SensorExpiryAlertStateTests {
     }
 
     @Test
+    fun clampedOrPastEndTimeSourceIsRejected() {
+        val now = end - min(1000)
+        // A Natives.getendtime()-style source returns "now" while the sensor runs.
+        assertEquals(0L, selectSensorExpiryEndMs(listOf("A" to now), "A", now))
+        assertEquals(0L, selectSensorExpiryEndMs(listOf("A" to (now - 5_000L)), "A", now))
+        assertEquals(0L, selectSensorExpiryEndMs(emptyList(), null, now))
+    }
+
+    @Test
+    fun endSelectionPrefersDisplayedSensorElseFarthestEnd() {
+        val now = 1_000_000L
+        val candidates = listOf("A" to now + 100_000L, "B" to now + 900_000L)
+        assertEquals(now + 100_000L, selectSensorExpiryEndMs(candidates, "A", now))
+        assertEquals(now + 900_000L, selectSensorExpiryEndMs(candidates, null, now))
+        assertEquals(now + 900_000L, selectSensorExpiryEndMs(candidates, "unknown", now))
+        // A displayed sensor without a plausible end must not shadow the running one.
+        assertEquals(
+            now + 900_000L,
+            selectSensorExpiryEndMs(listOf("A" to 0L, "B" to now + 900_000L), "A", now)
+        )
+    }
+
+    @Test
     fun defaultSensorExpiryConfigKeeps24hThreshold() {
         val cfg = AlertDefaults.defaultConfig(AlertType.SENSOR_EXPIRY, isMmol = false)
         assertEquals(setOf(1440), cfg.expiryWarningMinutes)
