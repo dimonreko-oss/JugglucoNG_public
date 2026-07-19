@@ -17,6 +17,9 @@ import tk.glucodata.UiRefreshBus
 import tk.glucodata.drivers.ManagedSensorUiSignals
 
 object SibionicsRegistry {
+    private val orphanMirrorReconcileLock = Any()
+    @Volatile private var reconcilingOrphanMirrors = false
+
     private const val PREFS_NAME = "tk.glucodata_preferences"
     private const val PREF_SENSORS = "sibionics_managed_sensors"
     private const val PREF_LAST_INDEX_PREFIX = "sibionics_managed_last_index_"
@@ -237,6 +240,14 @@ object SibionicsRegistry {
     @JvmStatic
     fun removeSensor(context: Context, sensorId: String?) {
         val record = findRecord(context, sensorId) ?: return
+        val wasMainSensor = record.matchesId(SensorIdentity.resolveMainSensor())
+        val replacementSensor = if (wasMainSensor) {
+            runCatching { SensorBluetooth.resolveReplacementSensorSerial(record.sensorId) }
+                .onFailure { Log.stack(SibionicsConstants.TAG, "removeSensor(resolveReplacement)", it) }
+                .getOrNull()
+        } else {
+            null
+        }
         finishNativeMirror(record)
         val id = record.sensorId
         val remainingRecords = persistedRecords(context).filter { !it.matchesId(record.sensorId) }
@@ -266,6 +277,9 @@ object SibionicsRegistry {
         }.commit()
         if (!committed) {
             Log.e(SibionicsConstants.TAG, "Failed to persist removal of $id")
+        } else if (wasMainSensor) {
+            runCatching { SensorBluetooth.setCurrentSensorSelection(replacementSensor.orEmpty()) }
+                .onFailure { Log.stack(SibionicsConstants.TAG, "removeSensor(rehomeCurrent)", it) }
         }
         ManagedSensorUiSignals.markDeviceListDirty()
         SensorIdentity.invalidateCaches()
@@ -292,16 +306,86 @@ object SibionicsRegistry {
         val activeMatches = runCatching { Natives.activeSensors().orEmpty() }
             .getOrDefault(emptyArray())
             .filter { active -> aliases.any { it.equals(active, ignoreCase = true) } }
-        val candidates = (activeMatches + aliases).distinctBy { it.lowercase() }
-        for (candidate in candidates) {
-            val sensorPtr = runCatching { Natives.str2sensorptr(candidate) }
-                .onFailure { Log.stack(SibionicsConstants.TAG, "removeSensor(str2sensorptr $candidate)", it) }
-                .getOrDefault(0L)
-            if (sensorPtr == 0L) continue
-            runCatching { Natives.finishfromSensorptr(sensorPtr) }
-                .onSuccess { Log.i(SibionicsConstants.TAG, "Finished native mirror for ${record.sensorId} as $candidate") }
-                .onFailure { Log.stack(SibionicsConstants.TAG, "removeSensor(finishfromSensorptr $candidate)", it) }
-            return
+        for (candidate in activeMatches.distinctBy { it.lowercase() }) {
+            if (finishNativeMirror(candidate, record.sensorId)) return
+        }
+    }
+
+    internal fun finishNativeMirror(candidate: String, sensorId: String): Boolean {
+        val streamPtr = runCatching { Natives.getdataptr(candidate) }
+            .onFailure { Log.stack(SibionicsConstants.TAG, "finishNativeMirror(getdataptr $candidate)", it) }
+            .getOrDefault(0L)
+        if (streamPtr == 0L) return false
+        return try {
+            // finishfromSensorptr() derives the list index from the mirror's
+            // namespaced directory and cannot resolve direct-stream SIBI shells.
+            // A temporary stream owns the exact sensors.dat index, so finishSensor()
+            // retires the shell synchronously without changing shared/native code.
+            Natives.finishSensor(streamPtr)
+            Log.i(SibionicsConstants.TAG, "Finished native mirror for $sensorId as $candidate")
+            true
+        } catch (error: Throwable) {
+            Log.stack(SibionicsConstants.TAG, "finishNativeMirror(finishSensor $candidate)", error)
+            false
+        } finally {
+            runCatching { Natives.freedataptr(streamPtr) }
+                .onFailure { Log.stack(SibionicsConstants.TAG, "finishNativeMirror(freedataptr $candidate)", it) }
+        }
+    }
+
+    internal fun matchesNativeMirrorIdentity(left: String?, right: String?): Boolean {
+        val a = left?.trim().orEmpty()
+        val b = right?.trim().orEmpty()
+        if (a.isBlank() || b.isBlank()) return false
+        if (a.equals(b, ignoreCase = true)) return true
+        return SibionicsConstants.stripManagedPrefix(a)
+            .equals(SibionicsConstants.stripManagedPrefix(b), ignoreCase = true)
+    }
+
+    internal fun reconcileOrphanedNativeMirrors(context: Context) {
+        synchronized(orphanMirrorReconcileLock) {
+            if (reconcilingOrphanMirrors) return
+            reconcilingOrphanMirrors = true
+        }
+        try {
+            val records = persistedRecords(context)
+            val activeSensors = runCatching { Natives.activeSensors().orEmpty() }
+                .onFailure { Log.stack(SibionicsConstants.TAG, "reconcileOrphanMirrors(activeSensors)", it) }
+                .getOrDefault(emptyArray())
+            activeSensors.forEach { nativeId ->
+                val fullNativeName = runCatching { Natives.resolveFullSensorName(nativeId) }
+                    .getOrNull()
+                    ?.trim()
+                    .orEmpty()
+                if (!fullNativeName.startsWith(SibionicsConstants.MANAGED_PREFIX, ignoreCase = true) ||
+                    records.any { it.matchesId(nativeId) || it.matchesId(fullNativeName) }
+                ) {
+                    return@forEach
+                }
+
+                // Older builds could delete the Kotlin record while leaving this
+                // direct-stream shell active. Retire it before shared BLE restore
+                // can mistake the short native alias for a legacy sensor.
+                val mainSensor = SensorIdentity.resolveMainSensor()
+                val wasMainSensor = matchesNativeMirrorIdentity(mainSensor, nativeId) ||
+                    matchesNativeMirrorIdentity(mainSensor, fullNativeName)
+                val replacementSensor = if (wasMainSensor) {
+                    runCatching { SensorBluetooth.resolveReplacementSensorSerial(nativeId) }
+                        .onFailure { Log.stack(SibionicsConstants.TAG, "orphanMirror(resolveReplacement)", it) }
+                        .getOrNull()
+                } else {
+                    null
+                }
+                val retired = finishNativeMirror(nativeId, fullNativeName)
+                if (retired && wasMainSensor) {
+                    runCatching { SensorBluetooth.setCurrentSensorSelection(replacementSensor.orEmpty()) }
+                        .onFailure { Log.stack(SibionicsConstants.TAG, "orphanMirror(rehomeCurrent)", it) }
+                }
+            }
+        } finally {
+            synchronized(orphanMirrorReconcileLock) {
+                reconcilingOrphanMirrors = false
+            }
         }
     }
 
@@ -729,8 +813,10 @@ object SibionicsManagedSensorIdentityAdapter : tk.glucodata.drivers.ManagedSenso
     override fun resolveCallbackDataptr(sensorId: String?): Long? =
         SibionicsRegistry.findRecord(Applic.app, sensorId)?.let { 0L }
 
-    override fun persistedSensorIds(context: Context): List<String> =
-        SibionicsRegistry.persistedRecords(context).map { it.sensorId }
+    override fun persistedSensorIds(context: Context): List<String> {
+        SibionicsRegistry.reconcileOrphanedNativeMirrors(context)
+        return SibionicsRegistry.persistedRecords(context).map { it.sensorId }
+    }
 
     override fun createManagedCallback(context: Context, sensorId: String, dataptr: Long): SuperGattCallback? =
         SibionicsRegistry.createRestoredCallback(context, sensorId, dataptr)
@@ -745,15 +831,6 @@ object SibionicsManagedSensorIdentityAdapter : tk.glucodata.drivers.ManagedSenso
             ?.takeIf { it.isNotBlank() }
             ?.let(::listOf)
             .orEmpty()
-
-    override fun isOrphanedNativeShell(sensorId: String?, fullNativeName: String?): Boolean {
-        val nativeName = fullNativeName?.trim().orEmpty()
-        if (!nativeName.startsWith(SibionicsConstants.MANAGED_PREFIX, ignoreCase = true)) {
-            return false
-        }
-        return SibionicsRegistry.findRecord(Applic.app, sensorId) == null &&
-            SibionicsRegistry.findRecord(Applic.app, nativeName) == null
-    }
 
     override fun isExternallyManagedBleSensor(sensorId: String?): Boolean =
         SibionicsRegistry.findRecord(Applic.app, sensorId) != null

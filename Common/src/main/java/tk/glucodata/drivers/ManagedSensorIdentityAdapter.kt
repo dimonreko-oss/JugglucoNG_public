@@ -38,13 +38,6 @@ interface ManagedSensorIdentityAdapter {
 
     fun resolveNativeHistorySensorNames(sensorId: String?): List<String> = emptyList()
 
-    /**
-     * Returns true when an active native sensor is a driver-owned mirror whose
-     * persisted managed record no longer exists. Shared BLE reconciliation
-     * must suppress these shells instead of restoring them as legacy drivers.
-     */
-    fun isOrphanedNativeShell(sensorId: String?, fullNativeName: String?): Boolean = false
-
     fun isExternallyManagedBleSensor(sensorId: String?): Boolean = false
 
     fun usesNativeDirectStreamShell(sensorId: String?): Boolean = false

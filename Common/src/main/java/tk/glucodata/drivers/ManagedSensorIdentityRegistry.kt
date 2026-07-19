@@ -68,10 +68,6 @@ object ManagedSensorIdentityRegistry {
             .mapNotNull { it.resolveNativeSensorName(sensorId) }
             .firstOrNull { it.isNotBlank() }
 
-    fun isOrphanedNativeShell(sensorId: String?, fullNativeName: String?): Boolean =
-        orderedAdapters(sensorId, Applic.app)
-            .any { it.isOrphanedNativeShell(sensorId, fullNativeName) }
-
     fun isExternallyManagedBleSensor(sensorId: String?): Boolean =
         orderedAdapters(sensorId, Applic.app).any { it.isExternallyManagedBleSensor(sensorId) }
 
