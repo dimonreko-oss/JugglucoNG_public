@@ -746,6 +746,15 @@ object SibionicsManagedSensorIdentityAdapter : tk.glucodata.drivers.ManagedSenso
             ?.let(::listOf)
             .orEmpty()
 
+    override fun isOrphanedNativeShell(sensorId: String?, fullNativeName: String?): Boolean {
+        val nativeName = fullNativeName?.trim().orEmpty()
+        if (!nativeName.startsWith(SibionicsConstants.MANAGED_PREFIX, ignoreCase = true)) {
+            return false
+        }
+        return SibionicsRegistry.findRecord(Applic.app, sensorId) == null &&
+            SibionicsRegistry.findRecord(Applic.app, nativeName) == null
+    }
+
     override fun isExternallyManagedBleSensor(sensorId: String?): Boolean =
         SibionicsRegistry.findRecord(Applic.app, sensorId) != null
 

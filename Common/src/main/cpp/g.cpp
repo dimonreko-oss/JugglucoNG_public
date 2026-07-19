@@ -1927,7 +1927,21 @@ fromjava(getViewModeFromSensorptr)(JNIEnv *env, jclass cl, jlong sensorptr) {
 extern "C" JNIEXPORT void JNICALL
 fromjava(finishfromSensorptr)(JNIEnv *env, jclass cl, jlong sensorptr) {
   auto *sens = reinterpret_cast<SensorGlucoseData *>(sensorptr);
-  const int sensorindex = sensors->sensorindex(sens->sensorname()->data());
+  if (!sens || !sensors)
+    return;
+  int sensorindex = sensors->sensorindex(sens->sensorname()->data());
+  // Managed direct-stream mirrors use a namespaced on-disk directory (for
+  // example SIBI:P225043JMV), while sensors.dat indexes them by the short
+  // sensor name. Looking up only the directory name returns -1 and makes the
+  // finish operation a convincing no-op: it logs "finishSensor", but the
+  // sensor remains in activeSensors() and is restored as a legacy callback.
+  if (sensorindex < 0)
+    sensorindex = sensors->sensorindexshort(sens->shortsensorname()->data());
+  if (sensorindex < 0) {
+    LOGGER("finishfromSensorptr: no sensor index for %s\n",
+           sens->showsensorname().data());
+    return;
+  }
   finishsensor(sens, sensorindex);
 }
 #endif

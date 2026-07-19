@@ -1343,6 +1343,27 @@ public class SensorBluetooth {
         }
     }
 
+    private static boolean finishOrphanedManagedNativeShell(String name) {
+        try {
+            final String fullName = Natives.resolveFullSensorName(name);
+            if (!ManagedSensorIdentityRegistry.INSTANCE.isOrphanedNativeShell(name, fullName)) {
+                return false;
+            }
+            final long sensorptr = Natives.str2sensorptr(name);
+            if (sensorptr != 0L) {
+                Natives.finishfromSensorptr(sensorptr);
+            }
+            clearCurrentCorruptSensorName(name);
+            Log.w(LOG_ID, "Finished orphaned managed native shell " + name + " (" + fullName + ")");
+            return true;
+        } catch (Throwable t) {
+            Log.e(LOG_ID, "finish orphaned managed native shell failed for " + name + ": " + t.getMessage());
+            // Do not resurrect a known managed shell as a legacy BLE callback
+            // merely because cleanup failed. A later reconciliation retries it.
+            return true;
+        }
+    }
+
     private static String[] filterActiveSensorNames(String[] names) {
         if (names == null) {
             return null;
@@ -1350,7 +1371,9 @@ public class SensorBluetooth {
         final ArrayList<String> valid = new ArrayList<>(names.length);
         for (String name : names) {
             if (isValidShortSensorName(name)) {
-                valid.add(name);
+                if (!finishOrphanedManagedNativeShell(name)) {
+                    valid.add(name);
+                }
             } else {
                 // Control-character names are known malformed native records and can be
                 // resolved safely by their full value. A placeholder such as "?" has no
