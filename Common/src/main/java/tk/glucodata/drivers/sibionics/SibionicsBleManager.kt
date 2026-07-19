@@ -1630,8 +1630,8 @@ class SibionicsBleManager(
 
     override fun setAutoResetDays(days: Int): Boolean {
         if (!supportsAutoReset()) return false
-        autoResetDays = if (days in 1 until SibionicsResetPolicy.DISABLED_DAYS) {
-            SibionicsResetPolicy.ENABLED_DAYS
+        autoResetDays = if (SibionicsResetPolicy.isEnabled(days)) {
+            days
         } else {
             SibionicsResetPolicy.DISABLED_DAYS
         }
@@ -1684,7 +1684,7 @@ class SibionicsBleManager(
         val decision = SibionicsResetPolicy.evaluate(
             nowMs = now,
             startTimeMs = startTimeMs,
-            autoResetEnabled = autoResetDays == SibionicsResetPolicy.ENABLED_DAYS,
+            autoResetDays = autoResetDays,
             postponedUntilMs = SibionicsRegistry.loadResetPostponedUntilMs(context, SerialNumber),
             lastReminderAtMs = SibionicsRegistry.loadResetReminderAtMs(context, SerialNumber),
             glucoseMgdl = latestGlucoseMgdl,
@@ -1695,7 +1695,7 @@ class SibionicsBleManager(
             SibionicsResetReminder.show(
                 context = context,
                 sensorId = SerialNumber,
-                dueAtMs = SibionicsResetPolicy.dueAtMs(startTimeMs),
+                dueAtMs = SibionicsResetPolicy.dueAtMs(startTimeMs, autoResetDays),
                 hardDeadlineMs = SibionicsResetPolicy.hardDeadlineMs(startTimeMs),
                 nowMs = now,
             )
@@ -1707,7 +1707,8 @@ class SibionicsBleManager(
         autoResetScheduled = true
         Log.i(
             SibionicsConstants.TAG,
-            "auto reset due serial=$SerialNumber forced=${decision.forced} enabled=${autoResetDays == SibionicsResetPolicy.ENABLED_DAYS}",
+            "auto reset due serial=$SerialNumber forced=${decision.forced} " +
+                "enabled=${SibionicsResetPolicy.isEnabled(autoResetDays)} days=$autoResetDays",
         )
         handler.post { resetSensor() }
     }
@@ -1719,7 +1720,7 @@ class SibionicsBleManager(
         ) return
         val context = Applic.app ?: return
         val now = System.currentTimeMillis()
-        val dueAt = SibionicsResetPolicy.dueAtMs(startTimeMs)
+        val dueAt = SibionicsResetPolicy.dueAtMs(startTimeMs, autoResetDays)
         val hardDeadline = SibionicsResetPolicy.hardDeadlineMs(startTimeMs)
         val reminderAt = dueAt - SibionicsResetPolicy.REMINDER_LEAD_MS
         val postponedUntil = SibionicsRegistry.loadResetPostponedUntilMs(context, SerialNumber)
