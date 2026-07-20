@@ -5463,6 +5463,16 @@ class AiDexBleManager(
         // (e.g., "Paused", "Unpaired", "Broadcast Only", "Pairing cancelled")
     }
 
+    override fun onBluetoothAdapterUnavailable() {
+        pendingStaleConnectionRecovery = false
+        connectAttemptInFlight = false
+        connectTime = 0L
+        resetConnectionRuntimeState(reason = "bluetooth-adapter-off", resetInvalidSetupCounter = false)
+        setPhase(Phase.IDLE)
+        constatstatusstr = "Bluetooth off"
+        UiRefreshBus.requestStatusRefresh()
+    }
+
     override fun manualReconnectNow() {
         Log.i(TAG, "manualReconnectNow: forcing reconnect for $SerialNumber")
         consecutiveSetupDisconnects = 0

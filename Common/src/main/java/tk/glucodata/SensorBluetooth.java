@@ -1844,7 +1844,20 @@ public class SensorBluetooth {
                                     cb.constatchange[1] = System.currentTimeMillis();
                                     cb.constatstatusstr = "Bluetooth off"; // "
                                 }
-                                cb.close();
+                                if (cb instanceof ManagedBluetoothSensorDriver managed) {
+                                    // Adapter loss is a temporary transport event. Calling a
+                                    // managed callback's virtual close() may terminate its
+                                    // HandlerThread/executor and make Bluetooth recovery
+                                    // impossible until the whole app is restarted.
+                                    cb.closeGattTransport();
+                                    try {
+                                        managed.onBluetoothAdapterUnavailable();
+                                    } catch (Throwable th) {
+                                        Log.stack(LOG_ID, cb.SerialNumber + " adapter-off cleanup", th);
+                                    }
+                                } else {
+                                    cb.close();
+                                }
                             }
                             if (keepBluetooth)
                                 mBluetoothAdapter.enable();
