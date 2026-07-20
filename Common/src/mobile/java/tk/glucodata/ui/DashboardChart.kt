@@ -1120,6 +1120,42 @@ fun InteractiveGlucoseChart(
         }
     }
 
+    // TRACKING INACTIVITY FOR GRAPH RESET
+    var lastActiveTime by rememberSaveable { mutableLongStateOf(System.currentTimeMillis()) }
+    val currentLatestDataTimestamp by rememberUpdatedState(latestDataTimestamp)
+    val currentSelectedTimeRange by rememberUpdatedState(selectedTimeRange)
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isResumed = true
+
+                val currentTime = System.currentTimeMillis()
+                val latestTimestamp = currentLatestDataTimestamp
+                // Bound how long the chart may keep a frozen viewport. After 5 min away,
+                // anchor the view to "now" even if the data flow has not re-emitted yet
+                // (cold start / process death restore). Clearing lastAutoScrolledTimestamp
+                // lets the dataSeriesSignature path re-snap on the next emission.
+                if (currentTime - lastActiveTime > 5 * 60 * 1000L) {
+                    visibleDuration = (currentSelectedTimeRange?.hours?.toLong() ?: 3L) * 60 * 60 * 1000
+                    val targetCenter = if (latestTimestamp > 0L) {
+                        liveCenterTimeFor(latestTimestamp, visibleDuration)
+                    } else {
+                        currentTime - visibleDuration / 2
+                    }
+                    centerTime = targetCenter
+                    previewCenterTime = previewCenterTimeForWindowEnd(targetCenter + visibleDuration / 2L)
+                    lastAutoScrolledTimestamp = 0L
+                }
+            }
+            else if (event == Lifecycle.Event.ON_PAUSE) {
+                isResumed = false
+                lastActiveTime = System.currentTimeMillis() // Save time on pause
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     // React to parent range state only when it represents a new range button choice.
     // Range changes alter the visible duration inside the current frame; tapping the
     // already-active range button is the explicit "back to now" action.
@@ -1390,40 +1426,6 @@ fun InteractiveGlucoseChart(
         pendingTimelineTapJob = null
     }
 
-    // GRAPH RESET ON RESUME
-    val currentLatestDataTimestamp by rememberUpdatedState(latestDataTimestamp)
-    val currentSelectedTimeRange by rememberUpdatedState(selectedTimeRange)
-
-    DisposableEffect(lifecycleOwner, resetToLatestOnResume) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                isResumed = true
-
-                if (resetToLatestOnResume) {
-                    // Live dashboard and journal charts answer "what's my glucose
-                    // now" on return. The history browser opts out so a short
-                    // interruption does not destroy deliberate navigation to an
-                    // older date.
-                    val latestTimestamp = currentLatestDataTimestamp
-                    visibleDuration = (currentSelectedTimeRange?.hours?.toLong() ?: 3L) * 60 * 60 * 1000
-                    val targetCenter = if (latestTimestamp > 0L) {
-                        liveCenterTimeFor(latestTimestamp, visibleDuration)
-                    } else {
-                        System.currentTimeMillis() - visibleDuration / 2
-                    }
-                    centerTime = targetCenter
-                    previewCenterTime = previewCenterTimeForWindowEnd(targetCenter + visibleDuration / 2L)
-                    lastAutoScrolledTimestamp = 0L
-                    selectedPoint = null
-                }
-            }
-            else if (event == Lifecycle.Event.ON_PAUSE) {
-                isResumed = false
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
 
     // Auto-dismiss selection if off-screen (User Request)
     LaunchedEffect(centerTime, visibleDuration, selectedPoint) {
