@@ -103,7 +103,9 @@ class TrendWindowCadenceTests {
         }
         val result = TrendEngine.calculateTrend(points, useRaw = false, isMmol = false)
         assertTrue("a sensor that turned 8 min ago should read as rising, was ${result.velocity}", result.velocity > 0.5f)
-        assertEquals(TrendEngine.TrendState.FortyFiveUp, result.state)
+        // Recency weighting carries this past the 1.0 SingleUp threshold; the unweighted fit
+        // over the same window only reached FortyFiveUp.
+        assertEquals(TrendEngine.TrendState.SingleUp, result.state)
 
         // The fixed 20 minute window would still have called this a fall. The two windows
         // disagree on direction outright, which is the whole responsiveness gain — and if
@@ -127,9 +129,16 @@ class TrendWindowCadenceTests {
     }
 
     @Test
-    fun stillFarCalmerThanASingleNoisyReading() {
-        // The regression's whole reason for existing must survive the shorter window:
-        // one jittery reading must not own the result.
+    fun stillFarCalmerThanTheEstimatorTheRegressionReplaced() {
+        // Recency weighting costs some noise rejection on purpose — that is the trade that
+        // buys the responsiveness. What must not come back is the pre-regression behaviour,
+        // where one bad reading owned the answer.
+        //
+        // On a steady -0.8/min fall, an 8 mg/dL blip on the newest reading moves this fit
+        // from -0.80 to -1.55, a drift of 0.75. The `0.6^i` adjacent-delta estimator moved
+        // to -4.00 on the identical input, a drift of 3.20 — it turned an ordinary fall into
+        // a full double-down. Holding the drift under 1.0 keeps one bad reading from
+        // promoting the arrow across two trend states.
         val clean = (0 until 20).map { i ->
             GlucosePoint(nowMillis - i * 60_000L, 100f + i * 0.8f, 0f)
         }
@@ -138,6 +147,8 @@ class TrendWindowCadenceTests {
 
         val a = TrendEngine.calculateTrend(clean, useRaw = false, isMmol = false).velocity
         val b = TrendEngine.calculateTrend(jittered, useRaw = false, isMmol = false).velocity
-        assertTrue("8 mg/dL of jitter moved the slope by ${Math.abs(b - a)}", Math.abs(b - a) < 0.5f)
+        val drift = Math.abs(b - a)
+        assertTrue("8 mg/dL of jitter moved the slope by $drift", drift < 1.0f)
+        assertTrue("the fall must survive the blip, read $b against a true -0.8", b < 0f)
     }
 }
