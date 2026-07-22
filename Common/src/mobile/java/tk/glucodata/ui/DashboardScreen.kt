@@ -158,11 +158,13 @@ import tk.glucodata.data.prediction.PredictiveSimulationSettings
 import tk.glucodata.data.prediction.buildGlucosePrediction
 import tk.glucodata.ui.journal.JournalDoseProfile
 import tk.glucodata.ui.journal.JournalEntrySheet
+import tk.glucodata.ui.journal.JournalExpandableFab
 import tk.glucodata.ui.journal.JournalFloatingActionMenu
 import tk.glucodata.ui.journal.JournalInlineChip
 import tk.glucodata.ui.journal.JournalSettingsScreen
-import tk.glucodata.ui.journal.buildActiveInsulinSummary
+import tk.glucodata.data.journal.JournalIobCalculator
 import tk.glucodata.ui.journal.buildJournalChartMarkers
+import tk.glucodata.ui.journal.journalQuickAddTimestamp
 import tk.glucodata.ui.viewmodel.DashboardViewModel
 import tk.glucodata.ui.theme.displayLargeExpressive
 import androidx.appcompat.app.AppCompatDelegate
@@ -309,6 +311,15 @@ fun DashboardScreen(
     val visualSmoothingMinutes = if (dataSmoothingExchangeOnly) 0 else chartSmoothingMinutes
     val previewWindowMode by viewModel.previewWindowMode.collectAsState()
     val journalEnabled by viewModel.journalEnabled.collectAsState()
+    val journalEiobDisplayEnabled by viewModel.journalEiobDisplayEnabled.collectAsState()
+    val journalQuickAddAlwaysNow by viewModel.journalQuickAddAlwaysNow.collectAsState()
+    val journalDashboardQuickAdd by viewModel.journalDashboardQuickAddButton.collectAsState()
+    val glucoseRangeColorsDisplayEnabled by viewModel.glucoseValueRangeColorsEnabled.collectAsState()
+    val glucoseArrowForecastEnabled by viewModel.glucoseArrowForecastColorsEnabled.collectAsState()
+    val appChartRangeColorsEnabled by viewModel.glucoseAppChartRangeColorsEnabled.collectAsState()
+    val dashboardShowDelta by viewModel.dashboardShowDelta.collectAsState()
+    val dashboardRowsShowDelta by viewModel.dashboardRowsShowDelta.collectAsState()
+    val deltaIntervalMinutes by viewModel.deltaIntervalMinutes.collectAsState()
     val journalDoseCalculatorEnabled by viewModel.journalDoseCalculatorEnabled.collectAsState()
     val journalFoodMacrosEnabled by viewModel.journalFoodMacrosEnabled.collectAsState()
     val journalFoodLibraryEnabled by viewModel.journalFoodLibraryEnabled.collectAsState()
@@ -354,6 +365,7 @@ fun DashboardScreen(
     var lastJournalType by rememberSaveable { mutableStateOf(JournalEntryType.INSULIN) }
     var journalNow by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var dashboardChartViewport by remember { mutableStateOf<ChartViewportSnapshot?>(null) }
+    var dashboardFabExpanded by rememberSaveable { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
     val journalPresetsById = remember(journalInsulinPresets) { journalInsulinPresets.associateBy { it.id } }
@@ -376,7 +388,7 @@ fun DashboardScreen(
         if (!journalEnabled || scopedJournalEntries.isEmpty()) {
             null
         } else {
-            buildActiveInsulinSummary(scopedJournalEntries, journalPresetsById, journalNow)
+            JournalIobCalculator.buildActiveInsulinSummary(scopedJournalEntries, journalPresetsById, journalNow)
         }
     }
     val predictionSettings = remember(
@@ -1071,8 +1083,31 @@ fun DashboardScreen(
             val recentReadings = remember(consumerHistory) {
                 buildDisplayReadings(consumerHistory, limit = 10)
             }
+            // Rows drawn vs points the row arrows regress over — see buildTrendHistory.
+            // recentReadings stays an exact prefix of this, which is what keeps
+            // ReadingRow's `history.drop(index)` aligned to the displayed rows.
+            val recentReadingsTrendHistory = remember(consumerHistory) {
+                buildTrendHistory(consumerHistory)
+            }
             val recentReadingPeers = remember(recentReadings, multiSensorDisplay) {
                 recentReadings.map { reading -> multiSensorDisplay.peersAt(reading.timestamp) }
+            }
+            // Per-row Δ: the hero's delta computation anchored at each row's
+            // timestamp — over the same unsmoothed history the hero reads, so the
+            // newest row and the hero can never disagree.
+            val recentReadingDeltaTexts = remember(
+                dashboardRowsShowDelta, recentReadings, glucoseHistory, unit, deltaIntervalMinutes
+            ) {
+                if (dashboardRowsShowDelta) {
+                    readingDeltaTexts(
+                        recentReadings.map { it.timestamp },
+                        glucoseHistory,
+                        tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit),
+                        deltaIntervalMinutes
+                    )
+                } else {
+                    emptyList()
+                }
             }
             val peerSeriesById = remember(multiSensorDisplay) {
                 multiSensorDisplay.series.associateBy { it.sensorId }
@@ -1187,7 +1222,9 @@ fun DashboardScreen(
                             sensorProgress = sensorProgress,
                             sensorHoursRemaining = sensorHoursRemaining,
                             currentDay = currentDay,
-                            history = consumerHistory, // Advanced Trend (smoothed when active)
+                            history = glucoseHistory, // Trend must see measured data: visual smoothing
+                            // reshapes the recent slope, and the notification/broadcast
+                            // arrow computes from unsmoothed history
                             calibratedValue = calibratedValue,
                             currentSnapshot = dashboardCurrentSnapshot,
                             dataState = dashboardDataState,
@@ -1198,6 +1235,10 @@ fun DashboardScreen(
                             targetHigh = targetHigh,
                             veryLowThreshold = veryLowThreshold,
                             veryHighThreshold = veryHighThreshold,
+                            valueRangeColorsEnabled = glucoseRangeColorsDisplayEnabled,
+                            showDelta = dashboardShowDelta,
+                            deltaIntervalMinutes = deltaIntervalMinutes,
+                            arrowForecastColorsEnabled = glucoseArrowForecastEnabled,
                             onHeroClick = {
                                 val autoVal = latestPoint?.value ?: tk.glucodata.GlucoseValueParser.parseFirstOrZero(currentGlucose)
                                 val rawVal = latestPoint?.rawValue ?: autoVal
@@ -1231,7 +1272,8 @@ fun DashboardScreen(
                                 viewMode = viewMode,
                                 index = index,
                                 totalCount = recentReadings.size,
-                                history = recentReadings,
+                                history = recentReadingsTrendHistory,
+                                deltaText = recentReadingDeltaTexts.getOrNull(index),
                                 peerReadings = recentReadingPeers.getOrNull(index).orEmpty(),
                                 peerSeries = peerSeriesById,
                                 multiSensorActive = multiSensorActive,
@@ -1318,6 +1360,8 @@ fun DashboardScreen(
                                     peerPredictionSeries = peerPredictionSeries,
                                     journalMarkers = journalChartMarkers,
                                     activeInsulinSummary = activeInsulinSummary,
+                                    showEiob = journalEiobDisplayEnabled,
+                                    appChartRangeColors = appChartRangeColorsEnabled,
                                     predictionSeries = predictionSeries,
                                     graphSmoothingMinutes = visualSmoothingMinutes,
                                     collapseSmoothedData = dataSmoothingCollapseChunks,
@@ -1422,7 +1466,9 @@ fun DashboardScreen(
                             sensorProgress = sensorProgress,
                             sensorHoursRemaining = sensorHoursRemaining,
                             currentDay = currentDay,
-                            history = consumerHistory, // Advanced Trend (smoothed when active)
+                            history = glucoseHistory, // Trend must see measured data: visual smoothing
+                            // reshapes the recent slope, and the notification/broadcast
+                            // arrow computes from unsmoothed history
                             calibratedValue = calibratedValue,
                             currentSnapshot = dashboardCurrentSnapshot,
                             dataState = dashboardDataState,
@@ -1433,6 +1479,10 @@ fun DashboardScreen(
                             targetHigh = targetHigh,
                             veryLowThreshold = veryLowThreshold,
                             veryHighThreshold = veryHighThreshold,
+                            valueRangeColorsEnabled = glucoseRangeColorsDisplayEnabled,
+                            showDelta = dashboardShowDelta,
+                            deltaIntervalMinutes = deltaIntervalMinutes,
+                            arrowForecastColorsEnabled = glucoseArrowForecastEnabled,
                             onHeroClick = {
                                 val autoVal = latestPoint?.value ?: tk.glucodata.GlucoseValueParser.parseFirstOrZero(currentGlucose)
                                 val rawVal = latestPoint?.rawValue ?: autoVal
@@ -1497,6 +1547,8 @@ fun DashboardScreen(
                                     peerPredictionSeries = peerPredictionSeries,
                                     journalMarkers = journalChartMarkers,
                                     activeInsulinSummary = activeInsulinSummary,
+                                    showEiob = journalEiobDisplayEnabled,
+                                    appChartRangeColors = appChartRangeColorsEnabled,
                                     predictionSeries = predictionSeries,
                                     graphSmoothingMinutes = visualSmoothingMinutes,
                                     collapseSmoothedData = dataSmoothingCollapseChunks,
@@ -1593,7 +1645,8 @@ fun DashboardScreen(
                                 viewMode = viewMode,
                                 index = index,
                                 totalCount = recentReadings.size,
-                                history = recentReadings,
+                                history = recentReadingsTrendHistory,
+                                deltaText = recentReadingDeltaTexts.getOrNull(index),
                                 peerReadings = recentReadingPeers.getOrNull(index).orEmpty(),
                                 peerSeries = peerSeriesById,
                                 multiSensorActive = multiSensorActive,
@@ -1701,6 +1754,44 @@ fun DashboardScreen(
                     }
                 }
             }
+            }
+
+            if (journalEnabled && journalDashboardQuickAdd) {
+                JournalExpandableFab(
+                    expanded = dashboardFabExpanded,
+                    onExpandedChange = {
+                        dashboardFabExpanded = it
+                        if (it) clearJournalAction()
+                    },
+                    onTypeSelected = { type ->
+                        dashboardFabExpanded = false
+                        clearJournalAction()
+                        lastJournalType = type
+                        val selection = dashboardChartViewport?.selectedPoint
+                        val suggestedGlucoseMgDl = selection?.value
+                            ?.takeIf { type == JournalEntryType.FINGERSTICK && !journalQuickAddAlwaysNow }
+                            ?.let {
+                                if (tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit)) {
+                                    tk.glucodata.ui.util.GlucoseFormatter.mmolToMg(it)
+                                } else {
+                                    it
+                                }
+                            }
+                        journalEditorRequest = JournalEditorRequest(
+                            type = type,
+                            timestamp = journalQuickAddTimestamp(
+                                selection?.timestamp,
+                                System.currentTimeMillis(),
+                                journalQuickAddAlwaysNow
+                            ),
+                            suggestedGlucoseMgDl = suggestedGlucoseMgDl,
+                            suggestedChartAnchorGlucoseMgDl = suggestedGlucoseMgDl
+                        )
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 20.dp, bottom = 20.dp)
+                )
             }
         }
     }
