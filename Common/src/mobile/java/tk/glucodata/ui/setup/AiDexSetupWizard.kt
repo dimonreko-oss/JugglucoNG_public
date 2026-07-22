@@ -32,7 +32,6 @@ import kotlinx.coroutines.launch
 import tk.glucodata.Log
 import tk.glucodata.R
 import tk.glucodata.SensorBluetooth
-import tk.glucodata.drivers.aidex.AiDexNativeFactory
 import tk.glucodata.drivers.aidex.AiDexScanDetection
 import tk.glucodata.ui.util.BleDeviceScanner
 import tk.glucodata.ui.util.rememberBleScanner
